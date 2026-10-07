@@ -1,0 +1,14 @@
+.DS_Store
+
+# Build output
+obj/
+*.o
+*.elf
+*.sym
+*.map
+*.lst
+
+# Media images
+*.img
+*.iso
+*.cue
