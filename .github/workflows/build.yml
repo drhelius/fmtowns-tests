@@ -11,7 +11,7 @@ on:
 
 jobs:
   linux:
-    name: Linux
+    name: Build
     runs-on: ubuntu-latest
     permissions:
       contents: read
