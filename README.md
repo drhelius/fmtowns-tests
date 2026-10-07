@@ -1,5 +1,7 @@
 # FM Towns Hardware Tests
 
+[![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/drhelius/fmtowns-tests/build.yml)](https://github.com/drhelius/fmtowns-tests/actions/workflows/build.yml)
+[![GitHub Releases](https://img.shields.io/github/v/tag/drhelius/fmtowns-tests?label=version)](https://github.com/drhelius/fmtowns-tests/releases)
 [![License](https://img.shields.io/github/license/drhelius/fmtowns-tests)](https://github.com/drhelius/fmtowns-tests/blob/main/LICENSE)
 [![Twitter Follow](https://img.shields.io/twitter/follow/drhelius)](https://x.com/drhelius)
 

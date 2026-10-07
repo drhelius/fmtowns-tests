@@ -1,0 +1,82 @@
+name: Build and Package
+
+on:
+  workflow_dispatch:
+  push:
+    paths-ignore:
+      - '**.md'
+      - '.github/**'
+      - '.vscode/**'
+  pull_request:
+
+jobs:
+  linux:
+    name: Linux
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Update OS
+      run: sudo apt-get update -qq
+    - name: Install build dependencies
+      run: sudo apt-get install -y build-essential git nasm python3 gcc-i686-linux-gnu binutils-i686-linux-gnu
+    - name: Build all projects
+      run: |
+        mkdir -p artifacts
+        for dir in */; do
+          # Skip hidden directories
+          if [[ "$dir" != .* ]]; then
+            echo "Building in directory: $dir"
+            cd "$dir"
+            if [ -f Makefile ]; then
+              make CROSS=i686-linux-gnu-
+              # Copy the floppy and CD images to artifacts directory
+              find . -maxdepth 1 \( -name "*.img" -o -name "*.iso" -o -name "*.cue" \) -exec cp {} ../artifacts/ \;
+            fi
+            cd ..
+          fi
+        done
+    - name: Archive images
+      uses: actions/upload-artifact@v4
+      with:
+        name: fmtowns-tests-images
+        path: artifacts/*
+        if-no-files-found: error
+
+  release:
+    name: Release
+    needs: [linux]
+    if: github.event_name != 'pull_request' && startswith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Prepare release directory
+      run: |
+        mkdir -p release
+    - name: Download artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: fmtowns-tests-images
+        path: release
+    - name: Create zip archive
+      run: |
+        cd release
+        zip fmtowns-tests-${{ github.ref_name }}.zip *.img *.iso *.cue
+    - name: Create release
+      run: |
+        gh release create ${{ github.ref_name }} ./release/fmtowns-tests-${{ github.ref_name }}.zip \
+          --title "FM Towns Tests ${{ github.ref_name }}" \
+          --draft \
+          --generate-notes
+      env:
+        GITHUB_TOKEN: ${{ github.TOKEN }}
