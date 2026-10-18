@@ -1,0 +1,29 @@
+#ifndef LAYOUT_H
+#define LAYOUT_H
+
+// The same layout as layout.inc
+
+#define PAYLOAD_BASE 0x00080000u
+#define PAYLOAD_END 0x000B0000u
+
+#define STORE_BASE 0x00010000u
+#define STORE_END 0x00040000u
+#define PRISTINE_BASE 0x00040000u
+#define PRISTINE_END 0x00070000u
+#define RING0_STACK_TOP 0x00072000u
+#define TEST_STACK_BASE 0x00072000u
+#define TEST_STACK_TOP 0x00078000u
+#define STACK_TOP 0x0007FFF0u
+#define SCRATCH_BASE 0x00100000u
+
+#define SEL_CODE32 0x08
+#define SEL_DATA32 0x10
+#define SEL_CODE16 0x18
+#define SEL_DATA16 0x20
+#define SEL_TSS 0x28
+#define SEL_FIRST_FREE 0x30
+#define SEL_DF_TSS 0x78
+
+#define GDT_ENTRIES 16
+
+#endif /* LAYOUT_H */

@@ -1,26 +1,20 @@
-#include <stddef.h>
 #include <stdint.h>
+#include "runtime.h"
 
 // GCC may emit calls to these even in freestanding code
+// String instructions keep it from turning the loops back into calls to themselves
 
 void* memset(void* destination, int value, size_t size)
 {
-    uint8_t* d = (uint8_t*)destination;
-
-    while (size-- > 0)
-        *d++ = (uint8_t)value;
-
+    void* d = destination;
+    __asm__ volatile ("cld\n\trep stosb" : "+D"(d), "+c"(size) : "a"(value) : "memory");
     return destination;
 }
 
 void* memcpy(void* destination, const void* source, size_t size)
 {
-    uint8_t* d = (uint8_t*)destination;
-    const uint8_t* s = (const uint8_t*)source;
-
-    while (size-- > 0)
-        *d++ = *s++;
-
+    void* d = destination;
+    __asm__ volatile ("cld\n\trep movsb" : "+D"(d), "+S"(source), "+c"(size) : : "memory");
     return destination;
 }
 

@@ -35,8 +35,8 @@ jobs:
             cd "$dir"
             if [ -f Makefile ]; then
               make CROSS=i686-linux-gnu-
-              # Copy the floppy and CD images to artifacts directory
-              find . -maxdepth 1 \( -name "*.img" -o -name "*.iso" -o -name "*.cue" \) -exec cp {} ../artifacts/ \;
+              # Copy the disc images to artifacts directory
+              find . -maxdepth 1 \( -name "*.bin" -o -name "*.cue" \) -exec cp {} ../artifacts/ \;
             fi
             cd ..
           fi
@@ -71,7 +71,7 @@ jobs:
     - name: Create zip archive
       run: |
         cd release
-        zip fmtowns-tests-${{ github.ref_name }}.zip *.img *.iso *.cue
+        zip fmtowns-tests-${{ github.ref_name }}.zip *.bin *.cue
     - name: Create release
       run: |
         gh release create ${{ github.ref_name }} ./release/fmtowns-tests-${{ github.ref_name }}.zip \

@@ -2,7 +2,8 @@
 ; The BIOS loads the first sector to B000:0000 and far calls B000:0004 in real mode
 ; with BL = boot device (2 floppy, 8 CD) and BH = unit. RETF hands the boot back to the BIOS
 ; The payload follows the boot record on the media and is loaded to PAYLOAD_BASE
-; It is entered in flat 32-bit protected mode, interrupts off, EBX = boot device
+; It is entered in flat 32-bit protected mode, interrupts off, EBX = boot device,
+; ESI = CR0 and EDI = EFLAGS as the BIOS handed them over
 
 cpu 386
 bits 16
@@ -16,7 +17,8 @@ DEVICE_FLOPPY       equ 2
 DEVICE_CD           equ 8
 CD_CHUNK            equ 16
 FLOPPY_TRACK        equ 8
-RETRIES             equ 3
+RETRIES             equ 20
+PAUSE_ROUNDS        equ 16
 
 ipl:
     db "IPL4"
@@ -33,6 +35,10 @@ payload_sectors:
     dw 0
 
 main:
+    pushfd
+    pop dword [cs:boot_eflags]
+    mov eax, cr0
+    mov [cs:boot_cr0], eax
     cli
     cld
     push ds
@@ -77,6 +83,7 @@ load_cd:
     call DISK_BIOS_SEGMENT:DISK_BIOS_OFFSET
     pop ds
     jnc .next
+    call pause
     dec byte [retries]
     jnz .read
     jmp decline
@@ -129,6 +136,7 @@ load_floppy:
     call DISK_BIOS_SEGMENT:DISK_BIOS_OFFSET
     pop ds
     jnc .next
+    call pause
     dec byte [retries]
     jnz .read
     jmp decline
@@ -139,6 +147,23 @@ load_floppy:
     shl bx, 6
     add [destination], bx
     jmp .track
+
+; About a second before a retry, so a drive still spinning up or seeking gets time: a million reads of the
+; free-running port 0026h, slow on every model's bus
+pause:
+    push cx
+    push dx
+    mov dx, PAUSE_ROUNDS
+.round:
+    xor cx, cx
+.read:
+    in ax, 0x26
+    loop .read
+    dec dx
+    jnz .round
+    pop dx
+    pop cx
+    ret
 
 loaded:
     mov al, 0xFF
@@ -161,6 +186,8 @@ protected:
     mov ss, ax
     mov esp, STACK_TOP
     movzx ebx, word [IPL_BASE + boot_device]
+    mov esi, [IPL_BASE + boot_cr0]
+    mov edi, [IPL_BASE + boot_eflags]
     mov eax, PAYLOAD_BASE
     jmp eax
 
@@ -176,6 +203,8 @@ gdt_descriptor:
     dw gdt_end - gdt - 1
     dd IPL_BASE + gdt
 
+boot_cr0:       dd 0
+boot_eflags:    dd 0
 boot_device:    dw 0
 remaining:      dw 0
 destination:    dw 0

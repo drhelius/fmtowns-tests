@@ -13,8 +13,7 @@ NC='\033[0m' # No Color
 
 # Test directories
 TESTS=(
-    "machine-id"
-    "timing"
+    "disc1-cpu-board"
 )
 
 # Get the script directory

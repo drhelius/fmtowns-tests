@@ -9,6 +9,11 @@ obj/
 *.lst
 
 # Media images
-*.img
-*.iso
+*.bin
 *.cue
+
+# Local tools, apart from the record decoder and the ROM slice table generator
+tools/*
+!tools/records.py
+!tools/romslices.py
+__pycache__/
