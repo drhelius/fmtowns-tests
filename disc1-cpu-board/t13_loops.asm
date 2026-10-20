@@ -276,6 +276,25 @@ bus_load_store16:
 
 TIMED bus_add_m16, {add [edi], ax}
 
+TIMED bus_call_edi, {call edi}
+
+global bus_ret
+align 16
+bus_ret:
+    ret
+
+global bus_store_load32
+align 16
+bus_store_load32:
+.loop:
+%rep UNROLL
+    mov [edi], eax
+    mov ebx, [edx]
+%endrep
+    dec ebp
+    jnz .loop
+    ret
+
 global bus_alt_store16
 align 16
 bus_alt_store16:
