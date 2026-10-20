@@ -60,6 +60,12 @@ uint32_t tb_now(void)
     return s_microseconds;
 }
 
+// A 0026h count read after the last tb_now(), within 65 ms of it, on the same scale
+uint32_t tb_extend(uint16_t count)
+{
+    return s_microseconds + (uint16_t)(count - s_last);
+}
+
 void tb_delay(uint32_t microseconds)
 {
     uint32_t start = tb_now();

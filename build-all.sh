@@ -14,6 +14,7 @@ NC='\033[0m' # No Color
 # Test directories
 TESTS=(
     "disc1-cpu-board"
+    "disc2-video"
 )
 
 # Get the script directory

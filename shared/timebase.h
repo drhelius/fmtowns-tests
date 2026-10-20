@@ -13,6 +13,7 @@ void tb_detect(void);
 void tb_sync(void);
 int tb_source(void);
 uint32_t tb_now(void);
+uint32_t tb_extend(uint16_t count);
 void tb_delay(uint32_t microseconds);
 void tb_pit_program(void);
 uint16_t tb_pit_read(void);

@@ -334,7 +334,7 @@ static uint32_t automatic_steps(const test_t* test)
 
     for (int i = 0; test->steps[i].name != 0 && i < SHELL_MAX_STEPS; i++)
     {
-        if ((test->steps[i].flags & (TEST_CONFIRM | TEST_RISKY)) == 0)
+        if ((test->steps[i].flags & (TEST_CONFIRM | TEST_RISKY | TEST_PHOTO)) == 0)
             steps |= 1u << i;
     }
 
@@ -501,7 +501,8 @@ static void open_test(int index)
         {
             const char* name = i == 0 ? "ALL STEPS" : test->steps[i - 1].name;
             uint32_t flags = i > 0 ? test->steps[i - 1].flags : 0;
-            const char* tag = (flags & TEST_RISKY) != 0 ? "RISKY" : (flags & TEST_CONFIRM) != 0 ? test->tags : "";
+            const char* tag = (flags & TEST_RISKY) != 0 ? "RISKY" : (flags & (TEST_CONFIRM | TEST_PHOTO)) != 0 ?
+                test->tags : "";
             uint8_t color = i == cursor ? COLOR_YELLOW : COLOR_WHITE;
             scr_printf(SCREEN_LEFT, SHELL_BODY_TOP + i, color, "%c%-2u %-26s %s", i == cursor ? '>' : ' ', i, name,
                 tag != 0 ? tag : "");
@@ -525,14 +526,17 @@ static void open_test(int index)
             if (cursor == 0)
             {
                 uint32_t steps = 0;
+                int confirmed = 0;
 
                 for (int i = 0; i < count; i++)
                 {
                     if ((test->steps[i].flags & TEST_RISKY) == 0)
                         steps |= 1u << i;
+
+                    confirmed |= (test->steps[i].flags & TEST_CONFIRM) != 0;
                 }
 
-                if (steps != automatic_steps(test) && !confirm(test, test->tags, 0))
+                if (confirmed && !confirm(test, test->tags, 0))
                     continue;
 
                 run_test(index, steps, 1);
