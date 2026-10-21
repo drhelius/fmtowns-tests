@@ -9,16 +9,17 @@ Hardware tests for the FM Towns family made by analyzing actual hardware.
 
 ## Test Discs
 
-Each disc boots from CD on any FM Towns model into a menu. A test runs on its own and the menu comes back afterwards; every device is put back to the same baseline before and after each test, so no test sees what another one left. Results are laid out to be read from a photo of the screen, and every result can also be shown as QR codes that carry the raw values.
+Each disc boots from CD on any FM Towns model into a menu. A test runs on its own and the menu comes back afterwards.
+Every device is put back to the same baseline before and after each test, so no test sees what another one left.
 
 ### The menu
 
 - **Pad in port 1** (Towns or Marty pad): Up/Down choose, A runs, B goes back, Left/Right turn pages, Run shows the QR codes, Select switches between 15 kHz and 31 kHz. A Towns keyboard works as well: arrows, Return, Esc, Tab, Q for Run, digits to pick a test and A to pick Run all.
 - **Run all** runs every test that needs nothing and changes nothing that survives a reset, then shows a summary with one line per test. Left/Right on it runs them in reverse.
-- **Tags**: `RTC!` and `CMOS!` mark tests or steps that change state that survives a reset (they put it back when done) and ask for A twice. `FPU` marks a test that needs a coprocessor.
+- **Tags**: `RTC!` and `CMOS!` mark tests or steps that change state that survives a reset (they put it back when done) and ask for A twice. `FPU` marks a test that needs a coprocessor; `PHOTOS`, `REC` and `LID` mark tests outside Run all that need a camera, a recorder from the line output, or someone at the CD drive; `PAD`, `MOUSE`, `KEYBOARD`, `DISK`, `SCSI` and `CARD` name the device a test needs.
 - **Steps**: a test with steps opens a list, so one step can be run again.
 - Every page has a header with the machine ID, CPU, RAM, time base (`0026` or `PIT`), line rate, build and run number, and a `CHK` code at the bottom, a CRC-16 of the page's text to check a transcription of a photo.
-- **QR codes** (Run on a result page or the summary): every raw value of the results, including those the pages leave out, as numbered QR codes to photograph and decode with `tools/records.py`, so exact values don't depend on reading digits off a photo. Run cycles the module size (2, 3 or 4 pixels) and Up/Down the mask, if a phone won't read one.
+- **QR codes** (Run on a result page or the summary): every raw value of the results, including those the pages leave out, as numbered QR codes to photograph and decode with `tools/records.py`. Run cycles the module size (2, 3 or 4 pixels) and Up/Down the mask.
 - A fault shows a page with the vector, the registers, the stack and the step that was running; a test that hangs leaves its step on the screen.
 
 ### disc1-cpu-board/
@@ -35,6 +36,60 @@ Each disc boots from CD on any FM Towns model into a menu. A test runs on its ow
 - **1.8 – Exceptions**: writes and reads through a real-mode CS after setting PE without a far jump, and page faults while delivering other exceptions.
 - **1.9 – FPU and CPU ID**: ESC instructions with no coprocessor, #NM, error delivery and limit checks with one, and the 486 items.
 - **1.10 – FPU results** (`FPU`): transcendental and remainder results in every precision and rounding mode.
+
+### disc2-video/
+**Video**
+
+- **2.1 – Sync timing census**: frame, VSYNC, line and HSYNC timing of every display mode from `FDA0h`.
+- **2.2 – Display mode cards** (`PHOTOS`): a test card in each mode, to see which modes reach the output.
+- **2.3 – VSYNC IRQ and IN sampling**: where IRQ11 and `IN` sample the sync bits, port access times, interrupt entry.
+- **2.4 – CRTC start and timing registers**: what `START` and the timing registers do while running, and the CRTC's own counters.
+- **2.5-2.8** (`PHOTOS`): line start addresses, horizontal wrap, the FM-R display page and writes during a line, as pictures.
+- **2.9 – Sprite transfer timing**: BUSY and the transfer time by mode, sprite count and bus use.
+- **2.10 – Sprite registers while busy**: sprite registers and sprite RAM written during a transfer.
+
+### disc3-sound-cd/
+**Sound and CD-ROM**
+
+The data track is 40,000 sectors, each one after the payload carrying its own LBA, followed by six audio tracks the
+build generates (`tracks/mktracks.py`): tones, DC steps and squares, a track with audio in its INDEX 00 pregap, a
+pre-emphasized track and its twin without the flag, and a minute of stepped tones. Burn it disc-at-once with the CUE.
+
+- **3.1, 3.2, 3.4** (`REC`): schedules to record from the line output, each after a sync burst: the buzzer and the
+  level of each source and gate, YM3438 SSG-EG inversion, and the output's coupling.
+- **3.3 – YM3438 read ports**: what `04DAh`, `04DCh` and `04DEh` read, the latch and its hold time, busy time and the
+  timer periods.
+- **3.5 – CD-DA stop and status**: the packets of a stop, pause and resume, and of every BIOS command from idle.
+- **3.6 – CD-DA pregap and emphasis**: the TOC, sub-Q through pregaps, and a recorded emphasis schedule (`REC`).
+- **3.7 – CDC drive state**: the status bytes of reads after boot, back to back, after idle times and around CD-DA.
+- **3.8 – CD read timing**: sector period, read-ahead depth, seek times by distance and command acceptance.
+- **3.9 – CDC transfer and IRQ**: `04C0h` through a read, DMA and CPU transfers, the IRQ9 matrix, undrained sectors.
+- **3.10 – CDC errors**: reads outside the data, bad parameters, commands without STATUS, unknown commands, SRST.
+- **3.11 – Lid and disc change** (`LID`): statuses while the lid opens and closes, with someone at the drive.
+- **3.12 – CD-DA play and end**: start latency, sub-Q over a minute, end of play with and without repeat.
+- **3.13 – Sound registers and IRQ13**: mixer and PCM registers, the PCM rate from its block interrupts, IRQ13.
+
+### disc4-input-storage/
+**Input, storage and CMOS**
+
+Tests that need someone at the machine prompt on screen with a countdown and take A or B from either pad. Nothing on
+this disc writes the floppy, the CMOS, an IC memory card or a SCSI device.
+
+- **4.1 – Pad ports** (`PAD`): both ports in four output states, a live view and 3-second prompts per button,
+  Marty pad Zoom included.
+- **4.2 – Mouse strobe timing** (`MOUSE`): T1, T2, T3 and T4 swept with the mouse in port 2, what a timeout clears,
+  and how a packet holds fast motion.
+- **4.3 – Keyboard** (`KEYBOARD`): buffer depth and overflow, breaks, typematic, IRQ1 pacing, `A0h`/`A1h` and
+  masking a pending request.
+- **4.4 – Floppy drive signals** (`DISK`): ready during a swap, `DSKCHG`, the FDC request with IRQ6 masked, motor
+  and index timing, seeks at each rate and the head load delay.
+- **4.5 – Floppy sector reads** (`DISK`): the ID list with sector positions, one sector read 256 times (Columns'
+  weak bytes when its disk is in), Read Track, a missing sector and a drive not ready.
+- **4.6 – CMOS contents**: the 2 KiB of ports and the 8 KiB window, the header and SETUP checks, the backup RAM map.
+- **4.7 – SCSI interface** (`SCSI`): read-only commands where the interface exists.
+- **4.8 – Port timing**: access times of this disc's ports, and of one time base read.
+- **4.9 – IC memory card** (`CARD`): the card status and bank registers, the window and attribute space, and the
+  status while the card goes out and back in.
 
 ---
 
@@ -59,7 +114,8 @@ Another i386 ELF cross toolchain can be used by setting `CROSS` to its prefix, f
 
 Each disc produces:
 
-- `<disc>.bin` and `<disc>.cue`: one `MODE1/2352` data track of raw sectors, with their EDC and ECC.
+- `<disc>.bin` and `<disc>.cue`: a `MODE1/2352` data track of raw sectors, with their EDC and ECC, and on disc 3
+  the audio tracks after it.
 - `<disc>.elf` and `<disc>.sym`: the linked payload and its symbols as `nm` output.
 
 `disc1-cpu-board/rom_slices.c` is generated by `tools/romslices.py` from a local ROM collection: CRCs and names only.

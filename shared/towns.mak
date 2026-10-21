@@ -1,6 +1,7 @@
 # Shared build rules for the FM Towns test discs
 # A disc Makefile sets NAME and OBJECTS (object files under obj/), then includes this file
 # Objects listed in ALLOW_486 may use 486 instructions; they only run on a 486 or behind an #UD handler
+# IMAGE_OPTIONS go to mkimage.py (a larger data track, audio tracks)
 
 CROSS ?= i686-elf-
 CC = $(CROSS)gcc
@@ -33,7 +34,7 @@ NOT_386 = bswap|cmpxchg[a-z0-9]*|xadd[a-z]*|cmov[a-z]+|fcmov[a-z]+|fu?comip?|inv
 all: $(NAME).bin $(NAME).sym
 
 $(NAME).bin: $(OBJDIR)/ipl.bin $(OBJDIR)/$(NAME).payload
-	$(PYTHON) $(SHARED)/mkimage.py $(OBJDIR)/ipl.bin $(OBJDIR)/$(NAME).payload $(NAME)
+	$(PYTHON) $(SHARED)/mkimage.py $(OBJDIR)/ipl.bin $(OBJDIR)/$(NAME).payload $(NAME) $(IMAGE_OPTIONS)
 
 # Addresses only, assembler constants are left out
 $(NAME).sym: $(NAME).elf
