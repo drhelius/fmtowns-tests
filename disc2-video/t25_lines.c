@@ -7,7 +7,8 @@
 // P3N at 15 kHz, P3 interlaced), every VRAM row showing its number as nine bars (bits 8-0, white for 1). Each step
 // writes CRTC registers at set lines of every frame and puts them back at VDE + 2 lines (the reset); the overlay in
 // the rows from 120 shows what was written where. Left/Right move by one, Up/Down by ten, A picks the variant, Select
-// switches between P1 and P3N, B ends the step
+// switches between P1 and P3N, B ends the step. Step 1's second variant resets FA0 at VDE - 18 lines instead, so X can
+// sweep the frame end without the reset there
 
 #define STEPS 7
 #define MODE_P1 0
@@ -23,6 +24,7 @@
 #define TEXT_LINES 12
 #define WRITE_LINE 200
 #define FA_ROW_100 0x3200
+#define EARLY_RESET 18
 
 typedef struct
 {
@@ -60,6 +62,7 @@ static int build(const setup_t* setup, int step, int variant, int param, raster_
 static void add(raster_event_t* events, int* count, int line, int delay, uint8_t kind, uint8_t reg, uint16_t value);
 static void overlay(const setup_t* setup, int step, int variant, int param);
 static int lines_of(const setup_t* setup, int half_lines);
+static int reset_line(const setup_t* setup, int step, int variant);
 static void restore(const setup_t* setup, int step);
 static void written(const setup_t* setup, const raster_event_t* events, int count);
 
@@ -79,7 +82,7 @@ static const test_step_t k_steps[] =
 
 const test_t g_test_lines =
 {
-    "2.5", "LINE START ADDRESS", "PHOTOS", 0, 1, sizeof(lines_t), k_steps, run, pages, page, summary
+    "2.5", "LINE START ADDRESS", "PHOTOS", 0, 2, sizeof(lines_t), k_steps, run, pages, page, summary
 };
 
 static void run(void* data, uint32_t steps)
@@ -201,7 +204,12 @@ static int lines_of(const setup_t* setup, int half_lines)
 
 static int variants(int step)
 {
-    return step == 2 ? 2 : step == 3 ? 2 : step == 6 ? 3 : 1;
+    return step == 0 ? 2 : step == 2 ? 2 : step == 3 ? 2 : step == 6 ? 3 : 1;
+}
+
+static int reset_line(const setup_t* setup, int step, int variant)
+{
+    return step == 0 && variant == 1 ? setup->vde - EARLY_RESET : setup->reset;
 }
 
 // Kept in line order, a later event on the same line after an earlier one
@@ -230,7 +238,8 @@ static int build(const setup_t* setup, int step, int variant, int param, raster_
     int count = 0;
     int last = setup->frames - 2;
     int write = setup->vds + WRITE_LINE;
-    int moved = (setup->reset + param) % setup->frames;
+    int reset = reset_line(setup, step, variant);
+    int moved = (reset + param) % setup->frames;
     uint16_t lo = video_register(mode, CRTC_LO0);
 
     moved = moved > last ? last : moved;
@@ -238,7 +247,7 @@ static int build(const setup_t* setup, int step, int variant, int param, raster_
 
     if (step == 0 || (step == 6 && variant == 0))
     {
-        add(events, &count, setup->reset, 0, RASTER_CRTC, CRTC_FA0, 0);
+        add(events, &count, reset, 0, RASTER_CRTC, CRTC_FA0, 0);
         add(events, &count, moved, 0, RASTER_CRTC, CRTC_FA0, FA_ROW_100);
     }
     else if (step == 1 || (step == 6 && variant == 1))
@@ -287,7 +296,8 @@ static void overlay(const setup_t* setup, int step, int variant, int param)
     const video_mode_t* mode = setup->mode;
     uint32_t line_ns = setup->raster.line_ns;
     uint32_t khz = video_dot_khz(mode);
-    int moved = (setup->reset + param) % setup->frames;
+    int reset = reset_line(setup, step, variant);
+    int moved = (reset + param) % setup->frames;
     int row = TEXT_Y;
 
     canvas_fill(canvas, TEXT_X, TEXT_Y - 2, 384, TEXT_LINES * 10 + 4, CANVAS_BLACK);
@@ -297,7 +307,7 @@ static void overlay(const setup_t* setup, int step, int variant, int param)
         setup->frames);
     row += 10;
     canvas_printf(canvas, TEXT_X, row, 1, CANVAS_WHITE, CANVAS_BLACK, "VS 0-%u VDS %u VDE %u RESET %u",
-        setup->vsync_end, setup->vds, setup->vde, setup->reset);
+        setup->vsync_end, setup->vds, setup->vde, reset);
     row += 10;
     canvas_text(canvas, TEXT_X, row, 1, CANVAS_GRAY, CANVAS_BLACK, "LINES FROM THE VSYNC RISE");
     row += 14;
@@ -305,7 +315,7 @@ static void overlay(const setup_t* setup, int step, int variant, int param)
     if (step == 0 || step == 6)
     {
         const char* what = step == 6 && variant == 1 ? "LO0 X2 AT LINE 200" : step == 6 && variant == 2 ?
-            "FO0 +3200H AT X" : "FA0 3200H (ROW 100) AT X";
+            "FO0 +3200H AT X" : step == 0 && variant == 1 ? "FA0 3200H AT X, 0 AT RESET" : "FA0 3200H (ROW 100) AT X";
 
         canvas_printf(canvas, TEXT_X, row, 1, CANVAS_YELLOW, CANVAS_BLACK, "%s", what);
         row += 10;

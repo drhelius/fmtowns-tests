@@ -8,6 +8,9 @@
 ; index 1Eh) masked, poll index << 8 | state on every change; returns the polls done
 ; void crtc_line_counts(uint32_t polls, uint32_t* counts): FR's DSPTH0 (high byte bit 4) alone, in a tight loop; adds
 ; the polls that read it set to counts[0] and its rises to counts[1]
+; void crtc_field_scan(uint32_t polls, uint16_t* times, uint32_t fields): FR's high byte until the polls run out or
+; the fields are full, from the first VSYNC rise; per field six readings of the 0026h counter: VSYNC rise, VSYNC fall,
+; the first two HSYNC rises after the fall, DSPTV0 rise and fall. The caller fills times with FFFFh
 
 cpu 386
 bits 32
@@ -16,6 +19,7 @@ global crtc_sync_scan
 global crtc_sync_stats
 global crtc_fr_scan
 global crtc_line_counts
+global crtc_field_scan
 
 section .text
 
@@ -225,6 +229,93 @@ crtc_line_counts:
 .done:
     add [edi], ecx
     add [edi + 4], ebp
+    pop ebp
+    pop edi
+    pop esi
+    pop ebx
+    ret
+
+; bl the state, cl the previous one, ax the time of a change; bh: bit 0 a field is open, bit 1 counting HSYNC rises
+; after the VSYNC fall, bit 2 the first one seen
+crtc_field_scan:
+    push ebx
+    push esi
+    push edi
+    push ebp
+    mov esi, [esp + 20]
+    mov edi, [esp + 24]
+    mov ebp, [esp + 28]
+    mov edx, 0x0443
+    in al, dx
+    and al, 0x46
+    mov bl, al
+    xor bh, bh
+.loop:
+    in al, dx
+    and al, 0x46
+    cmp al, bl
+    jne .change
+.next:
+    dec esi
+    jnz .loop
+    jmp .done
+.change:
+    mov cl, bl
+    mov bl, al
+    mov dx, 0x0026
+    in ax, dx
+    mov dx, 0x0443
+    test bl, 4
+    jz .vsync_low
+    test cl, 4
+    jnz .hsync
+    test bh, 1
+    jz .open
+    add edi, 12
+    dec ebp
+    jz .done
+.open:
+    mov bh, 1
+    mov [edi], ax
+    jmp .next
+.vsync_low:
+    test cl, 4
+    jz .hsync
+    test bh, 1
+    jz .next
+    mov [edi + 2], ax
+    or bh, 2
+    jmp .window
+.hsync:
+    test bh, 2
+    jz .window
+    test bl, 2
+    jz .window
+    test cl, 2
+    jnz .window
+    test bh, 4
+    jnz .second
+    mov [edi + 4], ax
+    or bh, 4
+    jmp .window
+.second:
+    mov [edi + 6], ax
+    and bh, 0xF9
+.window:
+    test bh, 1
+    jz .next
+    test bl, 0x40
+    jz .window_low
+    test cl, 0x40
+    jnz .next
+    mov [edi + 8], ax
+    jmp .next
+.window_low:
+    test cl, 0x40
+    jz .next
+    mov [edi + 10], ax
+    jmp .next
+.done:
     pop ebp
     pop edi
     pop esi

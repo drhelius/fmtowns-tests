@@ -9,8 +9,9 @@
 // squares, all with OFFS = 1: a column's squares share a fill color and a row's squares show its hex digit, so a photo
 // names any square. Times count from the BUSY rise; entry k is due at the measured clear plus k entries. After the
 // transfer a step stops the engine and shows the half just drawn (DP1), with its numbers in grid row 0. A repeats the
-// step, Run picks its variant (3B: SPEN set at line 100; 4B: a pattern rewritten), Select switches between P18
-// (15 kHz) and P20 (31 kHz), B ends it. Step 5 is numeric and runs in Run all
+// step, Run picks its variant (1: the write 8, 16 or 24 us later or earlier, to place where in entry 128 it lands; 3B:
+// SPEN set at line 100; 4B: a pattern rewritten), Select switches between P18 (15 kHz) and P20 (31 kHz), B ends it.
+// Step 5 is numeric and runs in Run all
 
 #define STEPS 6
 #define FIRST_INDEX 768
@@ -23,6 +24,7 @@
 #define SCAN_CHANGES 24
 #define REG6_FRAMES 16
 #define SPEN 0x80
+#define SHIFTS 7
 #define TEXT_LINE_HEIGHT 8
 
 typedef struct
@@ -73,12 +75,15 @@ static int halves(setup_t* setup);
 static void status(int half, const char* format, ...);
 static void wait_input(int* event);
 static const char* busy_verdict(const regs_t* result, int step, int which);
+static int variants(int step);
 
 static const uint16_t k_column_colors[16] =
 {
     0x03E0, 0x7C00, 0x001F, 0x7FE0, 0x7C1F, 0x03FF, 0x41E0, 0x221F, 0x33F4, 0x7E00, 0x2100, 0x6318, 0x4210, 0x0210,
     0x0208, 0x4010
 };
+
+static const int32_t k_shifts[SHIFTS] = { 0, 8, 16, 24, -24, -16, -8 };
 
 static const test_step_t k_steps[] =
 {
@@ -93,7 +98,7 @@ static const test_step_t k_steps[] =
 
 const test_t g_test_regs =
 {
-    "2.10", "SPRITE REGS WHILE BUSY", "PHOTOS", TEST_RUN_ALL, 1, sizeof(regs_t), k_steps,
+    "2.10", "SPRITE REGS WHILE BUSY", "PHOTOS", TEST_RUN_ALL, 2, sizeof(regs_t), k_steps,
     run, pages, page, summary
 };
 
@@ -139,13 +144,18 @@ static void run(void* data, uint32_t steps)
             if (event == INPUT_SELECT)
                 setup_mode(&setup, result, setup.which ^ 1);
             else if (event == INPUT_RUN)
-                variant ^= 1;
+                variant = (variant + 1) % variants(step);
         }
 
         start_engine(FIRST_INDEX);
     }
 
     video_sprite_reg(1, 0x00);
+}
+
+static int variants(int step)
+{
+    return step == 0 ? SHIFTS : step == 2 || step == 3 ? 2 : 1;
 }
 
 static void wait_input(int* event)
@@ -268,7 +278,9 @@ static void run_action(setup_t* setup, regs_t* result, int step, int variant)
 {
     uint32_t start;
     uint32_t end;
-    uint32_t due = due_us(setup, DUE_ENTRY) + (step == 3 && variant == 1 ? setup->per_ns / 2000u : 0);
+    int32_t shift = step == 0 ? k_shifts[variant] : 0;
+    uint32_t due = (uint32_t)((int32_t)due_us(setup, DUE_ENTRY) + shift) +
+        (step == 3 && variant == 1 ? setup->per_ns / 2000u : 0);
     int index = step < 4 ? step : 3;
 
     fill_sprites();
@@ -294,7 +306,10 @@ static void run_action(setup_t* setup, regs_t* result, int step, int variant)
     result->busy[index] = end - start;
     freeze(result, index);
     undo(step, variant);
-    status(result->page[index], "2.10 %u%s %s", step + 1, variant ? "B" : "", setup->mode->name);
+    if (step == 0)
+        status(result->page[index], "2.10 1 %s%d US %s", shift < 0 ? "" : "+", shift, setup->mode->name);
+    else
+        status(result->page[index], "2.10 %u%s %s", step + 1, variant ? "B" : "", setup->mode->name);
     status(result->page[index] | 0x10, "ACT %u BUSY %u US", result->act[index], result->busy[index]);
 }
 

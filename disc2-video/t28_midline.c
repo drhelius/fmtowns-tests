@@ -5,10 +5,10 @@
 
 // 2.8 Writes during a line (docs/12, HT-19), for photos: every frame a register changes at display line 200 plus a
 // delay D after the HSYNC rise, and goes back two lines after VDE. Palette entry 1 (the whole single-page 256-color
-// screen, with a ruler column every 64 pixels) turns white through blue, magenta and white as its three components
-// land; the other variants flip the priority bit, turn layer 0 off through FDA0h, change the layer formats or mask the
-// FM-R planes. Left/Right move D by one pass, Up/Down by ten, A picks the variant in step 3, Select switches between
-// the 31 kHz and the 15 kHz mode, B ends the step
+// screen, with a ruler column every 32 pixels, yellow every 64) turns white through blue, magenta and white as its
+// three components land; the other variants flip the priority bit, turn layer 0 off through FDA0h, change the layer
+// formats or mask the FM-R planes. Left/Right move D by one pass, Up/Down by ten, A picks the variant in step 3,
+// Select switches between the 31 kHz and the 15 kHz mode, B ends the step
 
 #define STEPS 3
 #define VARIANTS 4
@@ -63,7 +63,7 @@ static const test_step_t k_steps[] =
 
 const test_t g_test_midline =
 {
-    "2.8", "WRITES DURING A LINE", "PHOTOS", 0, 1, sizeof(midline_t), k_steps, run, pages, page, summary
+    "2.8", "WRITES DURING A LINE", "PHOTOS", 0, 2, sizeof(midline_t), k_steps, run, pages, page, summary
 };
 
 static void run(void* data, uint32_t steps)
@@ -140,7 +140,8 @@ static const char* mode_name(int step, int variant, int which)
     return variant == 3 ? "P6" : which ? "P14" : "P28";
 }
 
-// Single-page steps: index 1 everywhere, index 2 every 64 pixels and, in step 2, index 3 on odd pixels. Two-layer
+// Single-page steps: index 1 everywhere, index 2 every 64 pixels, orange between and, in step 2, index 3 on odd
+// pixels. Two-layer
 // variants: layer 0 red, layer 1 green or clear, the overlay in layer 1
 static void setup_mode(setup_t* setup, int step, int variant, int which)
 {
@@ -164,8 +165,8 @@ static void setup_mode(setup_t* setup, int step, int variant, int which)
                 canvas_fill(&setup->canvas, x, 0, 1, setup->canvas.height, CANVAS_GRAY);
         }
 
-        for (int x = 0; x < setup->canvas.width; x += 64)
-            canvas_fill(&setup->canvas, x, 0, 1, setup->canvas.height, 2);
+        for (int x = 0; x < setup->canvas.width; x += 32)
+            canvas_fill(&setup->canvas, x, 0, 1, setup->canvas.height, (x & 63) == 0 ? 2 : CANVAS_ORANGE);
 
         setup->overlay = setup->canvas;
     }
@@ -281,6 +282,12 @@ static void overlay(const setup_t* setup, int step, int variant, int delay)
     y += 10;
     canvas_printf(canvas, TEXT_X, y, 1, CANVAS_LIGHT, CANVAS_BLACK, "WROTE AT %u.%u LINES", setup->raster.times[0] *
         1000u / setup->raster.line_ns, setup->raster.times[0] * 10000u / setup->raster.line_ns % 10);
+    y += 10;
+
+    uint32_t line = setup->raster.times[0] * 1000u / setup->raster.line_ns;
+    uint32_t into = setup->raster.times[0] * 1000u - line * setup->raster.line_ns;
+    canvas_printf(canvas, TEXT_X, y, 1, CANVAS_LIGHT, CANVAS_BLACK, "= LINE %u + %u.%u US", line, into / 1000u,
+        into / 100u % 10u);
 }
 
 static int pages(const void* data, uint32_t steps)

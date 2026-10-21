@@ -5,7 +5,8 @@
 // when HST, VST and VST2 written in the display or in VSYNC take effect, and VSYNC with VST1 at or past VST. Last, the
 // other two places that show the syncs, FR (CRTC register 1Eh) and CFF86h, edge by edge against FDA0h in a 15, a 31 and
 // a 24 kHz mode, and the CRTC's own counters through FR's display bits: where layer 0's window opens and closes after
-// VSYNC, the CRTC's own line period, and what stopping the CRTC, a longer HST or a longer VST does to them
+// VSYNC, the CRTC's own line period, and what stopping the CRTC, a longer HST or a longer VST does to them. Then the
+// same window field by field over 16 fields, with each field's HSYNC phase after VSYNC, for fields that alternate
 
 #define MODES 2
 #define REPEATS 8
@@ -41,6 +42,17 @@
 #define FR_VSYNC 0x04
 #define FR_DSPTH0 0x10
 #define FR_DSPTV0 0x40
+#define FIELD_MODES 4
+#define FIELDS 16
+#define FIELD_TIMES 6
+#define FIELD_VSYNC 0
+#define FIELD_VSYNC_END 1
+#define FIELD_HSYNC 2
+#define FIELD_HSYNC_NEXT 3
+#define FIELD_OPEN 4
+#define FIELD_CLOSE 5
+#define FIELD_SCAN_US 330000u
+#define NO_TIME 0xFFFF
 
 #define STEP_START 0x01
 #define STEP_STOPPED 0x02
@@ -49,6 +61,7 @@
 #define STEP_VST1 0x10
 #define STEP_SOURCES 0x20
 #define STEP_COUNTERS 0x40
+#define STEP_FIELDS 0x80
 
 #define CASE_HST 0
 #define CASE_VST 1
@@ -103,6 +116,11 @@ typedef struct
 
 typedef struct
 {
+    uint16_t times[FIELDS][FIELD_TIMES];
+} fields_t;
+
+typedef struct
+{
     start_t starts[MODES][REPEATS];
     count_t stopped[MODES];
     count_t running[MODES];
@@ -116,12 +134,16 @@ typedef struct
     uint32_t stopped_lines[4];
     uint32_t hst_lines[4];
     counters_t vst_frames;
+    fields_t fields[FIELD_MODES];
+    uint8_t field_source;
+    uint8_t field_reserved[3];
 } crtc_result_t;
 
 uint32_t crtc_sync_scan(uint32_t polls, uint32_t* changes, uint32_t capacity, uint32_t mask, uint32_t fmr);
 void crtc_sync_stats(uint32_t source, uint32_t polls, uint32_t* counts);
 uint32_t crtc_fr_scan(uint32_t polls, uint32_t* changes, uint32_t capacity, uint32_t mask);
 void crtc_line_counts(uint32_t polls, uint32_t* counts);
+void crtc_field_scan(uint32_t polls, uint16_t* times, uint32_t fields);
 
 static void run(void* data, uint32_t steps);
 static int pages(const void* data, uint32_t steps);
@@ -150,11 +172,15 @@ static void count_lines(uint32_t* lines, uint32_t us);
 static void draw_counters(const crtc_result_t* result, int row);
 static void line_period(const uint32_t* lines, char* text, int size);
 static int edge_after(const counters_t* counters, int bit, int32_t after, int32_t* rise, int32_t* fall);
+static void measure_fields(crtc_result_t* result);
+static void draw_fields(const crtc_result_t* result, int index, int row);
+static int field_time(const uint16_t* times, int which);
 
 static const char* const k_mode_names[MODES] = { "S15", "S31" };
 static const char* const k_vst1_names[VST1_CASES] = { "VST1 > VST", "VST1 = VST", "VST1 = VST-1", "COLUMNS" };
 static const char* const k_source_modes[SOURCE_MODES] = { "S15", "S31", "P2" };
 static const char* const k_source_names[SOURCES] = { "FDA0", "FR", "F86" };
+static const char* const k_field_modes[FIELD_MODES] = { "P3N", "S15", "S31", "P1" };
 
 static const test_step_t k_steps[] =
 {
@@ -165,12 +191,13 @@ static const test_step_t k_steps[] =
     { "VST1 PAST VST", 0 },
     { "FR AND CFF86H SYNCS", 0 },
     { "CRTC COUNTERS IN FR", 0 },
+    { "CRTC WINDOW BY FIELD", 0 },
     { 0, 0 }
 };
 
 const test_t g_test_crtc =
 {
-    "2.4", "CRTC START AND TIMING", 0, TEST_RUN_ALL, 3, sizeof(crtc_result_t), k_steps, run, pages, page, summary
+    "2.4", "CRTC START AND TIMING", 0, TEST_RUN_ALL, 4, sizeof(crtc_result_t), k_steps, run, pages, page, summary
 };
 
 static void run(void* data, uint32_t steps)
@@ -252,6 +279,50 @@ static void run(void* data, uint32_t steps)
         measure_counters(result);
         video_program(video_find(k_mode_names[0]));
         tb_delay(50000);
+    }
+
+    if ((steps & STEP_FIELDS) != 0)
+    {
+        measure_fields(result);
+        video_program(video_find(k_mode_names[0]));
+        tb_delay(50000);
+    }
+}
+
+// Each mode: 16 fields of FR from a VSYNC rise, the times read from 0026h, so only where that counter runs
+static void measure_fields(crtc_result_t* result)
+{
+    uint32_t calibration[2];
+
+    for (int i = 0; i < FIELD_MODES; i++)
+    {
+        uint16_t* times = &result->fields[i].times[0][0];
+
+        for (int k = 0; k < FIELDS * FIELD_TIMES; k++)
+            times[k] = NO_TIME;
+    }
+
+    result->field_source = (uint8_t)tb_source();
+
+    if (tb_source() != TB_SOURCE_0026)
+        return;
+
+    for (int i = 0; i < FIELD_MODES; i++)
+    {
+        shell_step("%s CRTC WINDOW BY FIELD", k_field_modes[i]);
+        video_program(video_find(k_field_modes[i]));
+        tb_delay(50000);
+        out8(CRTC_ADDRESS, 0x1E);
+
+        uint32_t start = tb_now();
+        uint32_t done = crtc_fr_scan(SOURCE_CALIBRATION, calibration, 2, 0);
+        uint32_t elapsed = tb_now() - start;
+
+        if (elapsed == 0)
+            continue;
+
+        crtc_field_scan(FIELD_SCAN_US / elapsed * done, &result->fields[i].times[0][0], FIELDS);
+        tb_now();
     }
 }
 
@@ -600,7 +671,7 @@ static int pages(const void* data, uint32_t steps)
 {
     (void)data;
     (void)steps;
-    return 7;
+    return 7 + FIELD_MODES;
 }
 
 static const char* start_verdict(const crtc_result_t* result, int m)
@@ -737,6 +808,20 @@ static void page(const void* data, uint32_t steps, int number)
         }
 
         draw_sources(result, row);
+        return;
+    }
+
+    if (number >= 7)
+    {
+        shell_line(row++, COLOR_CYAN, "%s CRTC WINDOW BY FIELD, US", k_field_modes[number - 7]);
+
+        if ((steps & STEP_FIELDS) == 0)
+        {
+            shell_line(row++, COLOR_GRAY, "NOT RUN");
+            return;
+        }
+
+        draw_fields(result, number - 7, row);
         return;
     }
 
@@ -1025,6 +1110,49 @@ static void draw_counters(const crtc_result_t* result, int row)
         shell_line(row++, COLOR_WHITE, "S15 VST + 20: WINDOW EVERY %d", (last - first) / (rises - 1) / 1000);
     else
         shell_line(row++, COLOR_YELLOW, "S15 VST + 20: %u WINDOWS", rises);
+}
+
+// A field's event in microseconds after its VSYNC rise, or -1
+static int field_time(const uint16_t* times, int which)
+{
+    if (times[FIELD_VSYNC] == NO_TIME || times[which] == NO_TIME)
+        return -1;
+
+    return (uint16_t)(times[which] - times[FIELD_VSYNC]);
+}
+
+static void draw_fields(const crtc_result_t* result, int index, int row)
+{
+    const fields_t* fields = &result->fields[index];
+
+    if (result->field_source != TB_SOURCE_0026)
+    {
+        shell_line(row++, COLOR_GRAY, "NO 0026H COUNTER");
+        return;
+    }
+
+    shell_line(row++, COLOR_GRAY, "F  FIELD  VS END  HS1  HS2  VDS   VDE");
+
+    for (int f = 0; f < FIELDS; f++)
+    {
+        const uint16_t* times = fields->times[f];
+        int period;
+
+        if (times[FIELD_VSYNC] == NO_TIME)
+        {
+            shell_line(row++, COLOR_YELLOW, "%2u NO VSYNC", f);
+            continue;
+        }
+
+        if (f + 1 < FIELDS && fields->times[f + 1][FIELD_VSYNC] != NO_TIME)
+            period = (uint16_t)(fields->times[f + 1][FIELD_VSYNC] - times[FIELD_VSYNC]);
+        else
+            period = -1;
+
+        shell_line(row++, COLOR_WHITE, "%2u %6d %6d %4d %4d %4d %5d", f, period, field_time(times, FIELD_VSYNC_END),
+            field_time(times, FIELD_HSYNC), field_time(times, FIELD_HSYNC_NEXT), field_time(times, FIELD_OPEN),
+            field_time(times, FIELD_CLOSE));
+    }
 }
 
 static void summary(const void* data, uint32_t steps, char* line, uint8_t* color)
