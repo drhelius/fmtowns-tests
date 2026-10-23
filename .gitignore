@@ -11,9 +11,12 @@ obj/
 # Media images
 *.bin
 *.cue
+*.img
 
-# Local tools, apart from the record decoder and the ROM slice table generator
+# Tools
 tools/*
 !tools/records.py
 !tools/romslices.py
+!tools/write_floppy.sh
+!tools/write_floppy.cmd
 __pycache__/

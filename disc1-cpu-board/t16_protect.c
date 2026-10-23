@@ -2,12 +2,21 @@
 #include "cdc.h"
 
 // 1.6 Write protect and expansion NMI (docs/12, HT-21, HT-22): which of 00000h-0001Fh 0020h WRPROT keeps, for byte,
-// straddling and DMA writes, and how 05C0h/05C2h read and latch
+// straddling and DMA writes, and how 05C0h/05C2h read and latch. The DMA write is sector 1 of the boot medium
 
 #define VECTORS 32
 #define STRADDLE_FIRST 4
 #define STRADDLE_COUNT 9
 #define SECTOR_LBA 1
+
+#define FDC_COMMAND 0x0200
+#define FDC_TRACK 0x0202
+#define FDC_SECTOR 0x0204
+#define FDC_DRIVE 0x0208
+#define FDC_SELECT 0x020C
+#define FDC_SECTOR_SIZE 1024
+#define FDC_FAILED 0x9C
+#define FDC_TIMEOUT 0xFF
 
 typedef struct
 {
@@ -27,7 +36,8 @@ typedef struct
     uint8_t read_05c0[3];
     uint8_t read_05c2[3];
     uint8_t restored_05c0;
-    uint8_t reserved[2];
+    uint8_t dma_device;
+    uint8_t reserved;
 } protect_t;
 
 static const uint8_t k_writes[3] = { 0x00, 0x08, 0xF7 };
@@ -37,6 +47,9 @@ static int pages(const void* data, uint32_t steps);
 static void page(const void* data, uint32_t steps, int number);
 static void summary(const void* data, uint32_t steps, char* line, uint8_t* color);
 static void fill(const uint8_t* pattern);
+static void fdc_read_dma(int unit, uint32_t address, cdc_read_t* read);
+static uint8_t fdc_wait(uint32_t timeout);
+static int fdc_index_edge(uint32_t timeout);
 static void byte_map(const uint8_t* pattern, uint8_t control, uint8_t* map);
 static uint32_t changed_mask(const uint8_t* pattern);
 static int verdict_range(const protect_t* result);
@@ -77,11 +90,16 @@ static void run(void* data, uint32_t steps)
         result->straddle_dword[i] = changed_mask(result->pattern);
     }
 
-    shell_step("CDC DMA INTO 00000H");
+    result->dma_device = (uint8_t)g_boot.boot_device == BOOT_DEVICE_FLOPPY ? BOOT_DEVICE_FLOPPY : BOOT_DEVICE_CD;
+    shell_step(result->dma_device == BOOT_DEVICE_FLOPPY ? "FDC DMA INTO 00000H" : "CDC DMA INTO 00000H");
     fill(result->pattern);
     out8(0x0020, 0x88);
     result->read_0020 = in8(0x0020);
-    cdc_read_dma(SECTOR_LBA, 0x00000000u, &result->dma);
+
+    if (result->dma_device == BOOT_DEVICE_FLOPPY)
+        fdc_read_dma((g_boot.boot_device >> 8) & 0x03, 0x00000000u, &result->dma);
+    else
+        cdc_read_dma(SECTOR_LBA, 0x00000000u, &result->dma);
 
     if (result->dma.result == CDC_TIMEOUT)
         shell_set_status(RECORD_STATUS_TIMEOUT);
@@ -125,6 +143,91 @@ static void fill(const uint8_t* pattern)
 
     for (int i = 0; i < VECTORS; i++)
         MMIO8(i) = pattern[i];
+}
+
+// C0 H0 R2 of the boot drive in 2HD at 360 RPM, by DMA on channel 0 as disc 4 reads; the status bytes are the
+// restore and read statuses and the bytes moved
+static void fdc_read_dma(int unit, uint32_t address, cdc_read_t* read)
+{
+    uint32_t start = tb_now();
+    uint8_t restore = FDC_TIMEOUT;
+    uint8_t status = FDC_TIMEOUT;
+    uint16_t moved = 0;
+
+    read->result = CDC_TIMEOUT;
+    out8(FDC_SELECT, 0x40);
+    out8(FDC_SELECT, (uint8_t)(0x40 | (1 << unit)));
+    out8(FDC_DRIVE, 0x12);
+    out8(FDC_COMMAND, 0xD0);
+    tb_delay(60);
+
+    if (fdc_index_edge(2000000u))
+    {
+        tb_delay(500000u);
+        out8(FDC_COMMAND, 0x03);
+        tb_delay(60);
+        restore = fdc_wait(3000000u);
+        out8(FDC_TRACK, 0);
+        out8(FDC_SECTOR, SECTOR_LBA + 1);
+        cdc_dma_setup(0, address, FDC_SECTOR_SIZE - 1, 0x44);
+        out8(FDC_COMMAND, 0x80);
+        tb_delay(60);
+        status = fdc_wait(1500000u);
+        out8(0x00A1, 0x00);
+        moved = (uint16_t)(FDC_SECTOR_SIZE - 1 - (in8(0x00A2) | (in8(0x00A3) << 8)));
+
+        if (status != FDC_TIMEOUT)
+            read->result = (status & FDC_FAILED) == 0 && moved == FDC_SECTOR_SIZE ? CDC_OK : CDC_ERROR;
+    }
+
+    out8(0x00AF, 0x0F);
+    out8(FDC_COMMAND, 0xD0);
+    tb_delay(60);
+    out8(FDC_DRIVE, 0x00);
+    out8(FDC_SELECT, 0x00);
+    read->status[0] = restore;
+    read->status[1] = status;
+    read->status[2] = (uint8_t)moved;
+    read->status[3] = (uint8_t)(moved >> 8);
+    read->status_count = 4;
+    read->microseconds = tb_now() - start;
+}
+
+// The status once BUSY clears, or FDC_TIMEOUT after a forced end
+static uint8_t fdc_wait(uint32_t timeout)
+{
+    uint32_t start = tb_now();
+    uint8_t status;
+
+    while (((status = in8(FDC_COMMAND)) & 0x01) != 0)
+    {
+        if (tb_now() - start > timeout)
+        {
+            out8(FDC_COMMAND, 0xD0);
+            tb_delay(60);
+            return FDC_TIMEOUT;
+        }
+    }
+
+    return status;
+}
+
+static int fdc_index_edge(uint32_t timeout)
+{
+    uint32_t start = tb_now();
+    int previous = 1;
+
+    while (tb_now() - start < timeout)
+    {
+        int index = (in8(FDC_COMMAND) & 0x02) != 0;
+
+        if (index && !previous)
+            return 1;
+
+        previous = index;
+    }
+
+    return 0;
 }
 
 // Every byte written alone with WRPROT set, then all 32 read back
@@ -297,8 +400,16 @@ static void page(const void* data, uint32_t steps, int number)
     shell_line(row++, COLOR_WHITE, "DECODED %s", result->read_05c0[0] == 0xFF && result->read_05c0[1] == 0xFF &&
         result->read_05c0[2] == 0xFF ? "NO" : "YES");
     row++;
-    shell_line(row++, COLOR_CYAN, "CDC DMA SECTOR %u: %s %u US", SECTOR_LBA, result->dma.result == CDC_OK ? "OK" :
-        result->dma.result == CDC_TIMEOUT ? "TIMEOUT" : "ERROR", result->dma.microseconds);
+    shell_line(row++, COLOR_CYAN, "%s DMA SECTOR %u: %s %u US", result->dma_device == BOOT_DEVICE_FLOPPY ? "FDC" :
+        "CDC", SECTOR_LBA, result->dma.result == CDC_OK ? "OK" : result->dma.result == CDC_TIMEOUT ? "TIMEOUT" : "ERROR",
+        result->dma.microseconds);
+
+    if (result->dma_device == BOOT_DEVICE_FLOPPY)
+    {
+        shell_line(row++, COLOR_WHITE, "RESTORE %02X READ %02X %u BYTES", result->dma.status[0], result->dma.status[1],
+            result->dma.status[2] | (result->dma.status[3] << 8));
+        return;
+    }
 
     for (int i = 0; i < result->dma.status_count && i < 16 && row <= SHELL_BODY_BOTTOM; i += 8)
         shell_line(row++, COLOR_WHITE, "%02X %02X %02X %02X %02X %02X %02X %02X", result->dma.status[i],

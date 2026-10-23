@@ -2,6 +2,7 @@
 # A disc Makefile sets NAME and OBJECTS (object files under obj/), then includes this file
 # Objects listed in ALLOW_486 may use 486 instructions; they only run on a 486 or behind an #UD handler
 # IMAGE_OPTIONS go to mkimage.py (a larger data track, audio tracks)
+# FLOPPY = yes also builds <name>.img, a 2HD floppy image that boots the same payload
 
 CROSS ?= i686-elf-
 CC = $(CROSS)gcc
@@ -31,10 +32,13 @@ CHECK_386 = $(SHARED_OBJECTS) $(filter-out $(ALLOW_486),$(OBJECTS))
 # Instructions the 80386 doesn't have
 NOT_386 = bswap|cmpxchg[a-z0-9]*|xadd[a-z]*|cmov[a-z]+|fcmov[a-z]+|fu?comip?|invd|wbinvd|invlpg|cpuid|rdtsc|rdmsr|wrmsr|rsm
 
-all: $(NAME).bin $(NAME).sym
+all: $(NAME).bin $(if $(FLOPPY),$(NAME).img) $(NAME).sym
 
 $(NAME).bin: $(OBJDIR)/ipl.bin $(OBJDIR)/$(NAME).payload
 	$(PYTHON) $(SHARED)/mkimage.py $(OBJDIR)/ipl.bin $(OBJDIR)/$(NAME).payload $(NAME) $(IMAGE_OPTIONS)
+
+$(NAME).img: $(OBJDIR)/ipl.bin $(OBJDIR)/$(NAME).payload
+	$(PYTHON) $(SHARED)/mkimage.py $(OBJDIR)/ipl.bin $(OBJDIR)/$(NAME).payload $(NAME) --floppy
 
 # Addresses only, assembler constants are left out
 $(NAME).sym: $(NAME).elf
@@ -70,6 +74,6 @@ $(OBJDIR):
 	mkdir -p $(OBJDIR)
 
 clean:
-	$(RM) -rf $(OBJDIR) $(NAME).elf $(NAME).sym $(NAME).bin $(NAME).cue
+	$(RM) -rf $(OBJDIR) $(NAME).elf $(NAME).sym $(NAME).bin $(NAME).cue $(NAME).img
 
 .PHONY: all clean
