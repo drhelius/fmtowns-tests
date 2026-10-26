@@ -1,11 +1,11 @@
 #include "tests.h"
 
 // 2.1 Sync timing census (docs/12, HT-8 q1, HT-26): every mode of video.c (the Data Book presets, Cameltry's mode
-// with VST 20Bh and 20Ch, the probe's 31 kHz mode, the 15 kHz variants and the shell's screens) against the book's
-// timing: frame and VSYNC width from FDA0h bit 0, HSYNC rises per frame and the line period from bit 1, and the HSYNC
-// width from the share of polls that read it high
+// with VST 20Bh and 20Ch, the probe's 31 kHz mode, the 15 kHz variants, the shell's screens, and the window and
+// Chase H.Q. timing variants) against the book's timing: frame and VSYNC width from FDA0h bit 0, HSYNC rises per frame
+// and the line period from bit 1, and the HSYNC width from the share of polls that read it high
 
-#define MODE_CAPACITY 40
+#define MODE_CAPACITY 44
 #define PERIODS 8
 #define LINE_FRAMES 4
 #define LINE_SKIP 20
@@ -53,7 +53,7 @@ static uint32_t half_lines(const sync_t* result);
 
 const test_t g_test_sync =
 {
-    "2.1", "SYNC TIMING CENSUS", 0, TEST_RUN_ALL, 1, sizeof(sync_census_t), 0, run, pages, page, summary
+    "2.1", "SYNC TIMING CENSUS", 0, TEST_RUN_ALL, 2, sizeof(sync_census_t), 0, run, pages, page, summary
 };
 
 static void run(void* data, uint32_t steps)

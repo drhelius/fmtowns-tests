@@ -3,13 +3,21 @@
 // 3.13 Sound registers and IRQ13, silent: the mixer, PCM and sound interrupt ports as found and how they read back,
 // the RF5C68's rate from its block interrupts (a channel stepping one sample a clock through all 64 KiB of wave RAM),
 // and how the FM timer flags and the PCM causes reach 04E9h and IRQ13. Expected: 4 KiB blocks, 8 KiB per mask bit,
-// 04EBh cleared by reading, IRQ13 = (FM flags) or (PCM causes), PCM at 8 MHz / 384
+// 04EBh cleared by reading, IRQ13 = (FM flags) or (PCM causes), PCM at 8 MHz / 384. Also the ADC ports read 256 times,
+// and wave RAM written and read through its window by byte, word and dword with the PCM stopped and running, every
+// channel off; the rate step fills wave RAM by byte with the PCM stopped
 
 #define FOUND_PORTS 20
 #define EVENTS 16
 #define BLOCK_TIMEOUT 1000000u
 #define WAVE_SIZE 0x10000u
 #define SILENT 0x80
+#define ADC_READS 256
+#define ADC_GAP_US 100
+#define ADC_KEPT 16
+#define WAVE_CASES 6
+#define WAVE_OFFSET 0x0200u
+#define PCM_RUN 0x80
 
 typedef struct
 {
@@ -17,7 +25,13 @@ typedef struct
     uint8_t gate_reads[2];
     uint8_t mask_reads[2];
     uint8_t volume_reads[2];
-    uint8_t wave_reads[4];
+    uint8_t adc_min;
+    uint8_t adc_max;
+    uint8_t ready_and;
+    uint8_t ready_or;
+    uint16_t ready_count;
+    uint8_t adc_kept[ADC_KEPT];
+    uint8_t wave_cases[WAVE_CASES][4];
     uint8_t unmasked_flags;
     uint8_t event_count;
     uint8_t timeouts;
@@ -36,6 +50,9 @@ static void summary(const void* data, uint32_t steps, char* line, uint8_t* color
 static void step_registers(irq_t* result);
 static void step_rate(irq_t* result);
 static void step_fm(irq_t* result);
+static void step_adc(irq_t* result);
+static void step_wave(irq_t* result);
+static void wave_case(int which, uint8_t* reads);
 static uint8_t irq13(void);
 static uint32_t rate(const irq_t* result);
 
@@ -44,7 +61,16 @@ static const test_step_t k_steps[] =
     { "REGISTERS AS FOUND", 0 },
     { "PCM RATE FROM BLOCK IRQ", 0 },
     { "FM TIMER ON IRQ13", 0 },
+    { "ADC PORTS", 0 },
+    { "WAVE RAM ACCESS", 0 },
     { 0, 0 }
+};
+
+static const uint8_t k_wave_pattern[4] = { 0x12, 0x34, 0xA5, 0x5A };
+
+static const char* const k_wave_names[WAVE_CASES] =
+{
+    "B OFF > B OFF", "B ON  > B OFF", "B OFF > B ON", "W OFF > B OFF", "D OFF > B OFF", "B OFF > W OFF"
 };
 
 static const uint16_t k_ports[FOUND_PORTS] =
@@ -55,7 +81,7 @@ static const uint16_t k_ports[FOUND_PORTS] =
 
 const test_t g_test_irq =
 {
-    "3.13", "SOUND REGS AND IRQ13", 0, TEST_RUN_ALL, 1, sizeof(irq_t), k_steps, run, pages, page, summary
+    "3.13", "SOUND REGS AND IRQ13", 0, TEST_RUN_ALL, 2, sizeof(irq_t), k_steps, run, pages, page, summary
 };
 
 static void run(void* data, uint32_t steps)
@@ -64,6 +90,12 @@ static void run(void* data, uint32_t steps)
 
     if ((steps & 0x01) != 0)
         step_registers(result);
+
+    if ((steps & 0x10) != 0)
+        step_wave(result);
+
+    if ((steps & 0x08) != 0)
+        step_adc(result);
 
     if ((steps & 0x02) != 0)
         step_rate(result);
@@ -80,7 +112,6 @@ static void run(void* data, uint32_t steps)
 
 static void step_registers(irq_t* result)
 {
-    static const uint8_t k_pattern[4] = { 0x12, 0x34, 0xA5, 0x5A };
     uint8_t gate = in8(0x04D5);
     uint8_t command = in8(0x04E3);
     uint8_t volume = in8(0x04E2);
@@ -108,14 +139,93 @@ static void step_registers(irq_t* result)
     out8(0x04E3, (uint8_t)(0x03 | (command & 0x1C)));
     out8(0x04E2, volume);
     out8(0x04E3, command);
+}
 
-    snd_pcm_write(0x0100, k_pattern, 4);
+// 04E8h then 04E7h, 256 times 100 us apart: the data's range, how often bit 0 says ready, the first 16 samples
+static void step_adc(irq_t* result)
+{
+    shell_step("ADC PORTS");
+    result->adc_min = 0xFF;
+    result->adc_max = 0x00;
+    result->ready_and = 0xFF;
+    result->ready_or = 0x00;
+
+    for (int i = 0; i < ADC_READS; i++)
+    {
+        uint8_t ready = in8(0x04E8);
+        uint8_t value = in8(0x04E7);
+
+        result->ready_and &= ready;
+        result->ready_or |= ready;
+        result->ready_count = (uint16_t)(result->ready_count + (ready & 0x01));
+        result->adc_min = value < result->adc_min ? value : result->adc_min;
+        result->adc_max = value > result->adc_max ? value : result->adc_max;
+
+        if (i < ADC_KEPT)
+            result->adc_kept[i] = value;
+
+        tb_delay(ADC_GAP_US);
+    }
+}
+
+static void step_wave(irq_t* result)
+{
+    shell_step("WAVE RAM ACCESS");
+
+    for (int i = 0; i < WAVE_CASES; i++)
+        wave_case(i, result->wave_cases[i]);
+
     out8(0x04F7, 0x00);
 
-    for (int i = 0; i < 4; i++)
-        result->wave_reads[i] = MMIO8(g_machine.pcm_window + 0x0100 + (uint32_t)i);
+    for (uint32_t i = 0; i < WAVE_CASES * 0x10u; i++)
+        MMIO8(g_machine.pcm_window + WAVE_OFFSET + i) = SILENT;
+}
 
-    snd_pcm_fill(0x0100, 0x00, 4);
+// Four bytes of the pattern (XORed with the case) at their own offset in bank 0, written and read back by byte (B),
+// word (W) or dword (D), with 04F7h's run bit off or on for each side
+static void wave_case(int which, uint8_t* reads)
+{
+    uint32_t address = g_machine.pcm_window + WAVE_OFFSET + (uint32_t)which * 0x10u;
+    uint8_t bytes[4];
+
+    for (int i = 0; i < 4; i++)
+        bytes[i] = (uint8_t)(k_wave_pattern[i] ^ which);
+
+    out8(0x04F8, 0xFF);
+    out8(0x04F7, which == 1 ? PCM_RUN : 0x00);
+
+    if (which == 3)
+    {
+        MMIO16(address) = (uint16_t)(bytes[0] | (bytes[1] << 8));
+        MMIO16(address + 2) = (uint16_t)(bytes[2] | (bytes[3] << 8));
+    }
+    else if (which == 4)
+        MMIO32(address) = (uint32_t)bytes[0] | ((uint32_t)bytes[1] << 8) | ((uint32_t)bytes[2] << 16) |
+            ((uint32_t)bytes[3] << 24);
+    else
+    {
+        for (int i = 0; i < 4; i++)
+            MMIO8(address + (uint32_t)i) = bytes[i];
+    }
+
+    out8(0x04F7, which == 2 ? PCM_RUN : 0x00);
+
+    if (which == 5)
+    {
+        uint16_t low = MMIO16(address);
+        uint16_t high = MMIO16(address + 2);
+        reads[0] = (uint8_t)low;
+        reads[1] = (uint8_t)(low >> 8);
+        reads[2] = (uint8_t)high;
+        reads[3] = (uint8_t)(high >> 8);
+    }
+    else
+    {
+        for (int i = 0; i < 4; i++)
+            reads[i] = MMIO8(address + (uint32_t)i);
+    }
+
+    out8(0x04F7, 0x00);
 }
 
 // Channel 0 at envelope 0 stepping 1.0 through silent wave RAM with no loop marker, every mask bit set
@@ -127,10 +237,10 @@ static void step_rate(irq_t* result)
 
     for (uint32_t bank = 0; bank < WAVE_SIZE / 0x1000u; bank++)
     {
-        out8(0x04F7, (uint8_t)(0x80 | bank));
+        out8(0x04F7, (uint8_t)bank);
 
-        for (uint32_t i = 0; i < 0x1000u; i += 4)
-            MMIO32(g_machine.pcm_window + i) = 0x80808080u;
+        for (uint32_t i = 0; i < 0x1000u; i++)
+            MMIO8(g_machine.pcm_window + i) = SILENT;
     }
 
     snd_pcm_channel(0, 0x00, 0x0000, 0x0800, 0x00, 0x00);
@@ -219,14 +329,13 @@ static int pages(const void* data, uint32_t steps)
 {
     (void)data;
     (void)steps;
-    return 2;
+    return 3;
 }
 
 static void page(const void* data, uint32_t steps, int number)
 {
     const irq_t* result = (const irq_t*)data;
     int row = SHELL_BODY_TOP;
-    (void)steps;
 
     if (number == 0)
     {
@@ -243,8 +352,54 @@ static void page(const void* data, uint32_t steps, int number)
         shell_line(row++, COLOR_WHITE, "04EAH A5>%02X 00>%02X", result->mask_reads[0], result->mask_reads[1]);
         shell_line(row++, COLOR_WHITE, "04E3H 07, 04E2H 15: %02X %02X", result->volume_reads[0],
             result->volume_reads[1]);
-        shell_line(row++, COLOR_WHITE, "WAVE RAM 12 34 A5 5A: %02X %02X %02X %02X", result->wave_reads[0],
-            result->wave_reads[1], result->wave_reads[2], result->wave_reads[3]);
+        return;
+    }
+
+    if (number == 2)
+    {
+        shell_line(row++, COLOR_CYAN, "ADC: 04E8H, 04E7H, 256 READS");
+
+        if ((steps & 0x08) == 0)
+            shell_line(row++, COLOR_GRAY, "NOT RUN");
+        else
+        {
+            shell_line(row++, COLOR_WHITE, "04E7H MIN %02X MAX %02X", result->adc_min, result->adc_max);
+            shell_line(row++, COLOR_WHITE, "04E8H AND %02X OR %02X, READY %u", result->ready_and, result->ready_or,
+                result->ready_count);
+
+            for (int i = 0; i < ADC_KEPT; i += 8)
+                shell_line(row++, COLOR_WHITE, " %02X %02X %02X %02X %02X %02X %02X %02X", result->adc_kept[i],
+                    result->adc_kept[i + 1], result->adc_kept[i + 2], result->adc_kept[i + 3], result->adc_kept[i + 4],
+                    result->adc_kept[i + 5], result->adc_kept[i + 6], result->adc_kept[i + 7]);
+        }
+
+        row++;
+        shell_line(row++, COLOR_CYAN, "WAVE RAM, WRITTEN > READ, RUN BIT");
+
+        if ((steps & 0x10) == 0)
+        {
+            shell_line(row++, COLOR_GRAY, "NOT RUN");
+            return;
+        }
+
+        for (int i = 0; i < WAVE_CASES; i++)
+        {
+            const uint8_t* reads = result->wave_cases[i];
+            int same = 1;
+            int ones = 1;
+
+            for (int k = 0; k < 4; k++)
+            {
+                same &= reads[k] == (uint8_t)(k_wave_pattern[k] ^ i);
+                ones &= reads[k] == 0xFF;
+            }
+
+            shell_line(row++, same ? COLOR_WHITE : COLOR_YELLOW, "%-13s %02X %02X %02X %02X %s", k_wave_names[i], reads[0],
+                reads[1], reads[2], reads[3], same ? "OK" : ones ? "FF" : "DIFF");
+        }
+
+        shell_line(row++, COLOR_GRAY, "B BYTE, W WORD, D DWORD; PATTERN 12 34");
+        shell_line(row++, COLOR_GRAY, "A5 5A XORED WITH THE CASE NUMBER 0-5");
         return;
     }
 
@@ -270,6 +425,7 @@ static void page(const void* data, uint32_t steps, int number)
     }
 
     shell_line(row++, COLOR_GREEN, "%u SAMPLES/S (8 MHZ/384 20833)", rate(result));
+    shell_line(row++, COLOR_GRAY, "WAVE RAM FILLED BY BYTE, PCM STOPPED");
 
     if (result->timeouts != 0)
         shell_line(row++, COLOR_YELLOW, "NO BLOCK IRQ IN 1 S");

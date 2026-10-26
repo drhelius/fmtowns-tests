@@ -132,7 +132,7 @@ void cd_send(cd_log_t* log, uint8_t command, const uint8_t* parameters, uint32_t
     cd_send_raw(log, command, parameters, 8, options);
 }
 
-// Packets left from before are kept as stale, the first one in the log
+// Packets left from before are kept as stale, the first one in the log, unless CD_KEEP_QUEUE leaves them queued
 // The first command since boot is a one-sector read of LBA 1, as 1.6 did, whichever test sends it
 void cd_send_raw(cd_log_t* log, uint8_t command, const uint8_t* parameters, int count, uint32_t options)
 {
@@ -146,7 +146,7 @@ void cd_send_raw(cd_log_t* log, uint8_t command, const uint8_t* parameters, int 
     log->command = command;
     log->lba = CD_NO_LBA;
 
-    for (int i = 0; i < STALE_LIMIT && (cd_master() & CD_MASTER_SRQ) != 0; i++)
+    for (int i = 0; i < STALE_LIMIT && (options & CD_KEEP_QUEUE) == 0 && (cd_master() & CD_MASTER_SRQ) != 0; i++)
     {
         for (int k = 0; k < 4; k++)
         {

@@ -3,6 +3,8 @@
 ; jump and writes or reads a byte through CS
 ; HT-42: user code raises an exception whose ring-0 stack page is not present; #PF and #DF are task gates, or the
 ; kernel itself faults with ESP in that page
+; HT-56: a block at 08000h loads DS, SS or GS with 0 in real mode, sets PE without a far jump and uses them, or returns
+; to ring 3 with them, so the outer return's nulling shows
 
 cpu 386
 bits 32
@@ -27,6 +29,16 @@ global ht42_task_error
 global ht42_task_cr2
 global ht42_task_tr
 global ht42_continued
+global ht56_enter
+global ht56_block
+global ht56_block_end
+global ht56_variant
+global ht56_data
+global ht56_value
+global ht56_word
+global ht56_sp
+global ht56_selectors
+global ht56_stage
 
 RM_BASE             equ 0x8000
 RM_SEGMENT          equ 0x0800
@@ -47,6 +59,14 @@ KIND_IDT_PAGE       equ 11
 KIND_GATE_NP        equ 12
 HT42_USER_STACK     equ 0x0000D000
 HT42_USER_NP        equ 0x00005000
+
+%macro SET_PE 0
+    mov eax, cr0
+    or al, 1
+    mov cr0, eax
+%endmacro
+
+%define HT56(label) (RM_BASE + label - ht56_block)
 
 section .bss
 
@@ -187,6 +207,49 @@ ht42_user:
 .hang:
     jmp .hang
 
+; void ht56_enter(void): runs the null-selector block at 08000h with GS holding the ring-3 data selector
+ht56_enter:
+    pushad
+    mov [rm_saved_esp], esp
+    mov ax, HT42_USER_SS
+    mov gs, ax
+    jmp SEL_CODE16:HT56(ht56_entry16)
+
+; CPL 0 after the block's far jump, DS or GS still the real-mode 0: ES gets a null with RPL 3, FS a DPL 0 data
+; selector, then IRET to ring 3
+ht56_pm:
+    mov ax, SEL_DATA32
+    mov ss, ax
+    mov esp, [cs:rm_saved_esp]
+    mov ax, 3
+    mov es, ax
+    mov ax, SEL_DATA32
+    mov fs, ax
+    push dword HT42_USER_SS
+    push dword HT42_USER_STACK
+    push dword 0x00000002
+    push dword HT42_USER_CS
+    push dword ht56_user
+    iretd
+
+; CPL 3, BL = variant: the selectors as the return left them, then a read through DS (3) or GS (4), and #UD
+ht56_user:
+    mov [ss:HT56(ht56_selectors)], ds
+    mov [ss:HT56(ht56_selectors) + 2], es
+    mov [ss:HT56(ht56_selectors) + 4], fs
+    mov [ss:HT56(ht56_selectors) + 6], gs
+    mov byte [ss:HT56(ht56_stage)], 1
+    cmp bl, 3
+    jne .gs
+    mov al, [ds:HT56(ht56_data)]
+    jmp .read
+.gs:
+    mov al, [gs:HT56(ht56_data)]
+.read:
+    mov [ss:HT56(ht56_value)], al
+    mov byte [ss:HT56(ht56_stage)], 2
+    db 0x0F, 0x0B
+
 ; Task entries: the error code is on the task's stack
 ht42_pf_task:
     mov dword [ht42_task_vector], 14
@@ -278,3 +341,87 @@ rm_data:
     db 0xC3
 
 rm_block_end:
+
+bits 16
+
+align 16
+ht56_block:
+
+ht56_entry16:
+    mov ax, SEL_DATA16
+    mov ds, ax
+    mov es, ax
+    mov ss, ax
+    mov eax, cr0
+    and al, 0xFE
+    mov cr0, eax
+    jmp RM_SEGMENT:(ht56_real - ht56_block)
+
+; SS keeps SEL_DATA16's cache (base 0) unless the variant loads it, so a caught fault runs on a flat stack
+ht56_real:
+    mov esp, RM_STACK
+    mov ax, RM_SEGMENT
+    mov ds, ax
+    mov es, ax
+    movzx ebx, byte [ht56_variant - ht56_block]
+    cmp bl, 1
+    je .stack
+    cmp bl, 2
+    je .protected
+    cmp bl, 3
+    jae .ring3
+    xor ax, ax
+    mov ds, ax
+    SET_PE
+    mov byte [HT56(ht56_data)], 0xA5
+    mov al, [HT56(ht56_data)]
+    mov [es:ht56_value - ht56_block], al
+    jmp .done
+.stack:
+    xor ax, ax
+    mov ss, ax
+    mov esp, RM_STACK
+    SET_PE
+    mov ax, 0x5AA5
+    push ax
+    xor ax, ax
+    pop ax
+    mov [ht56_word - ht56_block], ax
+    mov [ht56_sp - ht56_block], sp
+    jmp .done
+.protected:
+    SET_PE
+    xor ax, ax
+    mov ds, ax
+    mov byte [HT56(ht56_data)], 0xA5
+    jmp .done
+.ring3:
+    xor ax, ax
+    cmp bl, 3
+    jne .gs
+    mov ds, ax
+    jmp .enter
+.gs:
+    mov gs, ax
+.enter:
+    SET_PE
+    jmp dword SEL_CODE32:ht56_pm
+.done:
+    jmp dword SEL_CODE32:rm_return
+
+ht56_variant:
+    db 0
+ht56_data:
+    db 0xC3
+ht56_value:
+    db 0
+ht56_stage:
+    db 0
+ht56_word:
+    dw 0
+ht56_sp:
+    dw 0
+ht56_selectors:
+    dw 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF
+
+ht56_block_end:

@@ -3,7 +3,8 @@
 // 4.1 Pad ports (docs/12, HT-11): both ports read in four output states of 04D6h, COM low and high with the trigger
 // outputs high, then the same with them low. Prompts of 3 s name a button to hold; the last 2 s are sampled, keeping
 // the AND and the OR of each state, so a bit that moved shows. The bits that differ from NOTHING are the button's,
-// and six reads right after COM rises show how soon bit 6 follows it
+// and six reads right after COM rises show how soon bit 6 follows it. Each prompt names only the button to hold now,
+// and the verdicts take NOTHING AGAIN as the idle state when it sampled, so a press during NOTHING can't fake a bit
 
 #define PROMPTS 12
 #define STATES 4
@@ -16,6 +17,7 @@
 #define STATE_DELAY_US 20
 #define OUTPUT_IDLE 0x0F
 #define ZOOM 9
+#define AGAIN 11
 
 typedef struct
 {
@@ -52,6 +54,7 @@ static void sample(uint16_t port, uint8_t* values, uint8_t* rise);
 static void live(pads_t* result);
 static void series(pads_t* result, int port);
 static int stable(const pad_sample_t* entry, int state);
+static const pad_sample_t* idle_row(const pads_t* result, int port);
 static uint8_t difference(const pad_sample_t* entry, const pad_sample_t* nothing, int state);
 static int zoom_line(const pads_t* result, int port, char* line, int size);
 static void draw_port(const pads_t* result, int port, int row);
@@ -210,9 +213,7 @@ static void series(pads_t* result, int port)
 
         shell_step("PORT %u, %s", port + 1, k_prompts[i]);
         fmt_format(text, sizeof(text), "PORT %u: HOLD %s", port + 1, k_prompts[i]);
-        ui_prompt(text, i + 1 < PROMPTS ? k_prompts[i + 1] : "LAST ONE");
-        scr_clear_rows(UI_PROMPT_ROW + 1, UI_PROMPT_ROW + 1);
-        shell_line(UI_PROMPT_ROW + 1, COLOR_GRAY, "NEXT: %s", i + 1 < PROMPTS ? k_prompts[i + 1] : "DONE");
+        ui_prompt(text, i == 0 || i == AGAIN ? "HANDS OFF THE PAD" : "NOW, UNTIL THE PROMPT CHANGES");
 
         for (int state = 0; state < STATES; state++)
         {
@@ -265,10 +266,16 @@ static uint8_t difference(const pad_sample_t* entry, const pad_sample_t* nothing
     return (uint8_t)(entry->all[state] ^ nothing->all[state]);
 }
 
+// NOTHING AGAIN when it sampled, else NOTHING
+static const pad_sample_t* idle_row(const pads_t* result, int port)
+{
+    return result->prompts[port][AGAIN].samples != 0 ? &result->prompts[port][AGAIN] : &result->prompts[port][0];
+}
+
 // Zoom's bits against NOTHING with COM low and high, each with the level it reads while pressed
 static int zoom_line(const pads_t* result, int port, char* line, int size)
 {
-    const pad_sample_t* nothing = &result->prompts[port][0];
+    const pad_sample_t* nothing = idle_row(result, port);
     const pad_sample_t* zoom = &result->prompts[port][ZOOM];
     uint8_t low = difference(zoom, nothing, 0);
     uint8_t high = difference(zoom, nothing, 1);
@@ -349,7 +356,8 @@ static void page(const void* data, uint32_t steps, int number)
 // One row per prompt: the four states (* when a bit moved while held) and the bits that differ from NOTHING
 static void draw_port(const pads_t* result, int port, int row)
 {
-    const pad_sample_t* nothing = &result->prompts[port][0];
+    const pad_sample_t* nothing = idle_row(result, port);
+    const pad_sample_t* first = &result->prompts[port][0];
     char line[40];
 
     shell_line(row++, COLOR_CYAN, "PORT %u   C0  C1  T0  T1   D0 D1", port + 1);
@@ -384,7 +392,12 @@ static void draw_port(const pads_t* result, int port, int row)
     shell_line(row++, COLOR_WHITE, "TRIG LOW HIDES A: %s",
         result->prompts[port][5].samples == 0 ? "-" :
         (difference(&result->prompts[port][5], nothing, 2) & 0x10) == 0 ? "YES" : "NO");
-    shell_line(row++, COLOR_GRAY, "C COM, T TRIG LOW, D BITS VS NOTHING");
+
+    if (first->samples != 0 && nothing != first && (difference(first, nothing, 0) | difference(first, nothing, 1)) != 0)
+        shell_line(row++, COLOR_YELLOW, "NOTHING DIFFERS FROM AGAIN: %02X %02X", difference(first, nothing, 0),
+            difference(first, nothing, 1));
+
+    shell_line(row++, COLOR_GRAY, "C COM, T TRIG LOW, D BITS VS AGAIN");
 }
 
 static void summary(const void* data, uint32_t steps, char* line, uint8_t* color)

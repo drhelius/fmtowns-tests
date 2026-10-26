@@ -1,6 +1,6 @@
 #include "tests.h"
 
-// 1.8 Exception edge cases (docs/12, HT-30, HT-42)
+// 1.8 Exception edge cases (docs/12, HT-30, HT-42, HT-56)
 
 #define RM_BASE 0x00008000u
 #define TRANSFERS 4
@@ -35,6 +35,10 @@
 #define IDT_COPY_PAGE 0x0F
 #define IDT_COPY_BASE (((uint32_t)IDT_COPY_PAGE << 12) - CPU_VECTOR_PF * 8)
 #define GOT_GATE 0x80
+#define NULL_STEP 12
+#define NULL_CASES 5
+#define NULL_RING3 3
+#define NULL_GS 4
 
 typedef struct
 {
@@ -59,6 +63,18 @@ typedef struct
     uint32_t saved_eip;
 } ht42_t;
 
+typedef struct
+{
+    uint8_t vector;
+    uint8_t value;
+    uint8_t landed;
+    uint8_t stage;
+    uint16_t word;
+    uint16_t sp;
+    uint16_t selectors[4];
+    uint32_t error;
+} null_case_t;
+
 // Expected: 14 the #PF task, 8 the #DF task, GOT_GATE | vector the interrupt gate of that vector
 typedef struct
 {
@@ -78,6 +94,7 @@ typedef struct
     ht42_t cases[HT42_CASES];
     uint8_t paging_ok;
     uint8_t reserved[3];
+    null_case_t nulls[NULL_CASES];
 } exceptions_t;
 
 extern void rm_enter(void);
@@ -87,8 +104,13 @@ extern void ht42_pf_task(void);
 extern void ht42_df_task(void);
 extern cpu_jmp_t* ht42_jump;
 extern uint32_t ht42_task_vector, ht42_task_error, ht42_task_cr2, ht42_task_tr, ht42_continued;
+extern void ht56_enter(void);
+extern uint8_t ht56_block[], ht56_block_end[], ht56_variant[], ht56_data[], ht56_value[], ht56_word[], ht56_sp[];
+extern uint8_t ht56_selectors[], ht56_stage[];
 
 static const char* const k_transfers[TRANSFERS] = { "FAR JMP", "FAR CALL", "RETF", "IRET" };
+static const char* const k_nulls[NULL_CASES] = { "DS 0 WRITE", "SS 0 PUSH", "PM DS 0", "RING 3, DS 0",
+    "RING 3, GS 0" };
 
 // The Intel table: a page fault while delivering a contributory or benign exception is delivered serially, a page
 // fault while delivering a page fault is a double fault. Steps 3-12 are the controls, one each and in rising risk:
@@ -134,6 +156,10 @@ static void run_case(const ht42_case_t* entry, ht42_t* result);
 static void case_call(void* argument);
 static int outcome(const ht42_t* entry);
 static int draw_cases(int row, const exceptions_t* result, uint32_t steps, int first_step, int last_step);
+static void null_call(void* argument);
+static void null_case(int variant, null_case_t* entry);
+static void null_result(const null_case_t* entry, char* text, int size);
+static const char* null_verdict(const exceptions_t* result);
 
 static const test_step_t k_steps[] =
 {
@@ -149,12 +175,13 @@ static const test_step_t k_steps[] =
     { "#PF IN THE IDT, DF GATE", TEST_RISKY },
     { "GATE NOT PRESENT, DF GATE", TEST_RISKY },
     { "GATE NOT PRESENT, DF TASK", TEST_RISKY },
+    { "NULL SELECTORS AFTER PE", 0 },
     { 0, 0 }
 };
 
 const test_t g_test_exceptions =
 {
-    "1.8", "EXCEPTIONS", 0, TEST_RUN_ALL, 2, sizeof(exceptions_t), k_steps, run, pages, page, summary
+    "1.8", "EXCEPTIONS", 0, TEST_RUN_ALL, 3, sizeof(exceptions_t), k_steps, run, pages, page, summary
 };
 
 static void run(void* data, uint32_t steps)
@@ -179,6 +206,15 @@ static void run(void* data, uint32_t steps)
 
         shell_step("%s DELIVERY FAULTS", k_cases[i].name);
         run_case(&k_cases[i], &result->cases[i]);
+    }
+
+    if ((steps & (1u << NULL_STEP)) != 0)
+    {
+        for (int variant = 0; variant < NULL_CASES; variant++)
+        {
+            shell_step("NULL %s", k_nulls[variant]);
+            null_case(variant, &result->nulls[variant]);
+        }
     }
 }
 
@@ -205,6 +241,38 @@ static void transfer(int variant, int read, access_t* access)
     access->done = vector == 0;
     access->value = read ? MMIO8(RM_BASE + (uint32_t)(rm_read_value - rm_block)) :
         MMIO8(RM_BASE + (uint32_t)(rm_data - rm_block));
+    cpu_reset();
+}
+
+static void null_call(void* argument)
+{
+    (void)argument;
+    ht56_enter();
+}
+
+// Variants 0-2 come back through the block's far jump or a caught fault; 3 and 4 end at CPL 3 with #GP or #UD
+static void null_case(int variant, null_case_t* entry)
+{
+    uint32_t size = (uint32_t)(ht56_block_end - ht56_block);
+    cpu_exception_t exception;
+
+    memcpy((void*)RM_BASE, ht56_block, size);
+    MMIO8(RM_BASE + (uint32_t)(ht56_variant - ht56_block)) = (uint8_t)variant;
+    cpu_set_descriptor(HT42_USER_CS, 0, 0xFFFFF, 0xFA, 0xC);
+    cpu_set_descriptor(HT42_USER_SS, 0, 0xFFFFF, 0xF2, 0xC);
+
+    int vector = cpu_catch(null_call, 0, &exception);
+    entry->vector = (uint8_t)vector;
+    entry->error = vector > 0 ? exception.error : 0;
+    entry->value = MMIO8(RM_BASE + (uint32_t)(ht56_value - ht56_block));
+    entry->landed = MMIO8(RM_BASE + (uint32_t)(ht56_data - ht56_block));
+    entry->stage = MMIO8(RM_BASE + (uint32_t)(ht56_stage - ht56_block));
+    entry->word = MMIO16(RM_BASE + (uint32_t)(ht56_word - ht56_block));
+    entry->sp = MMIO16(RM_BASE + (uint32_t)(ht56_sp - ht56_block));
+
+    for (int i = 0; i < 4; i++)
+        entry->selectors[i] = MMIO16(RM_BASE + (uint32_t)(ht56_selectors - ht56_block) + (uint32_t)i * 2);
+
     cpu_reset();
 }
 
@@ -351,7 +419,30 @@ static int pages(const void* data, uint32_t steps)
 {
     (void)data;
     (void)steps;
-    return 3;
+    return 4;
+}
+
+static void null_result(const null_case_t* entry, char* text, int size)
+{
+    if (entry->vector == CPU_VECTOR_UD + 1 && entry->stage == 2)
+        fmt_format(text, size, "OK %02X", entry->value);
+    else if (entry->vector != 0)
+        fmt_format(text, size, "#%02X %04X", entry->vector - 1, entry->error & 0xFFFF);
+    else
+        fmt_copy(text, "NO FAULT", size);
+}
+
+static const char* null_verdict(const exceptions_t* result)
+{
+    const null_case_t* gs = &result->nulls[NULL_GS];
+
+    if (gs->vector == CPU_VECTOR_UD + 1 && gs->stage == 2 && gs->selectors[3] == 0)
+        return "CACHED DPL";
+
+    if (gs->vector == CPU_VECTOR_GP + 1 && gs->stage == 1)
+        return "SELECTOR VALUE";
+
+    return "NEITHER";
 }
 
 static int draw_cases(int row, const exceptions_t* result, uint32_t steps, int first_step, int last_step)
@@ -448,6 +539,60 @@ static void page(const void* data, uint32_t steps, int number)
         return;
     }
 
+    if (number == 3)
+    {
+        if ((steps & (1u << NULL_STEP)) == 0)
+        {
+            shell_line(row, COLOR_GRAY, "STEP %u NOT RUN", NULL_STEP + 1);
+            return;
+        }
+
+        const null_case_t* nulls = result->nulls;
+        char text[16];
+        int usable = nulls[0].vector == 0 && nulls[0].landed == 0xA5 && nulls[1].vector == 0 &&
+            nulls[1].word == 0x5AA5;
+
+        shell_line(row++, COLOR_CYAN, "REAL-MODE 0, PE SET, NO FAR JUMP");
+
+        for (int variant = 0; variant < NULL_RING3; variant++)
+        {
+            if (nulls[variant].vector != 0)
+                fmt_format(text, sizeof(text), "#%02X %04X", nulls[variant].vector - 1, nulls[variant].error & 0xFFFF);
+            else if (variant == 1)
+                fmt_format(text, sizeof(text), "OK %04X", nulls[variant].word);
+            else
+                fmt_format(text, sizeof(text), "OK %02X", nulls[variant].value);
+
+            if (variant == 1)
+                shell_line(row++, COLOR_WHITE, "%-12s %-10s SP %04X", k_nulls[variant], text, nulls[variant].sp);
+            else
+                shell_line(row++, COLOR_WHITE, "%-12s %-10s MEM %02X", k_nulls[variant], text, nulls[variant].landed);
+        }
+
+        shell_line(row++, usable ? COLOR_GREEN : COLOR_YELLOW, "REAL-MODE 0 AFTER PE: %s", usable ? "USABLE" : "FAULTS");
+        row++;
+        shell_line(row++, COLOR_CYAN, "IRET TO RING 3, THEN A READ");
+        shell_line(row++, COLOR_GRAY, "CASE         DS   ES   FS   GS");
+
+        for (int variant = NULL_RING3; variant < NULL_CASES; variant++)
+        {
+            const null_case_t* entry = &nulls[variant];
+            null_result(entry, text, sizeof(text));
+            shell_line(row++, COLOR_WHITE, "%-12s %04X %04X %04X %04X", k_nulls[variant], entry->selectors[0],
+                entry->selectors[1], entry->selectors[2], entry->selectors[3]);
+            shell_line(row++, COLOR_WHITE, "  READ %s", text);
+        }
+
+        shell_line(row++, COLOR_GREEN, "OUTER RETURN: %s", null_verdict(result));
+        row++;
+        shell_line(row++, COLOR_GRAY, "BEFORE: ES 0003 (NULL), FS 0010");
+        shell_line(row++, COLOR_GRAY, " (DPL 0), GS 003B (DPL 3) OR A");
+        shell_line(row++, COLOR_GRAY, " REAL-MODE 0 OVER THAT CACHE");
+        shell_line(row++, COLOR_GRAY, "CACHED DPL: GS 0 KEPT, READ OK");
+        shell_line(row++, COLOR_GRAY, "SELECTOR VALUE: GS 0 NULLED, #0D");
+        return;
+    }
+
     shell_line(row++, COLOR_CYAN, "CONTROLS, A RISKY STEP EACH");
     row = draw_cases(row, result, steps, 2, 11);
     shell_line(row++, COLOR_GRAY, "#PF S: STACK PRESENT, EXPECT GATE 0E");
@@ -476,7 +621,10 @@ static void summary(const void* data, uint32_t steps, char* line, uint8_t* color
         matches += outcome(&result->cases[i]) == k_cases[i].expected && !result->cases[i].continued;
     }
 
-    fmt_format(line, 34, "JMP W %s R %s TABLE %u/%u", result->writes[0].vector ? "GP" : "OK",
-        result->reads[0].vector ? "GP" : "OK", matches, cases);
+    int nulls = (steps & (1u << NULL_STEP)) != 0;
+    int usable = result->nulls[0].vector == 0 && result->nulls[1].vector == 0;
+
+    fmt_format(line, 34, "JMP W %s R %s TABLE %u/%u%s", result->writes[0].vector ? "GP" : "OK",
+        result->reads[0].vector ? "GP" : "OK", matches, cases, nulls ? (usable ? " NUL OK" : " NUL GP") : "");
     *color = matches == cases ? COLOR_WHITE : COLOR_YELLOW;
 }

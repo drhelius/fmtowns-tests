@@ -187,7 +187,13 @@ uint8_t fdc_read_dma(uint8_t command, uint16_t count, uint32_t timeout, uint32_t
 
 uint8_t fdc_restore(uint8_t rate, uint32_t* elapsed)
 {
-    out8(FDC_COMMAND, (uint8_t)(0x00 | (rate & 0x03)));
+    return fdc_type1((uint8_t)(0x00 | (rate & 0x03)), elapsed);
+}
+
+// A type I command as written, its time from the write to BUSY clear
+uint8_t fdc_type1(uint8_t command, uint32_t* elapsed)
+{
+    out8(FDC_COMMAND, command);
     tb_delay(COMMAND_SETTLE_US);
     uint8_t status = fdc_wait(3000000u, elapsed);
 

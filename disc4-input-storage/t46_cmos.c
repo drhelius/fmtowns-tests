@@ -3,7 +3,8 @@
 // 4.6 CMOS contents (docs/12, HT-29), read only: the disc never writes the CMOS. The 2,048 bytes at the even ports
 // 3000h-3FFEh and the 8 KiB window (F40000h on the 386SX models, C2140000h on the others), the validity rule of
 // the system ROM's CMOS service, the SETUP record at E8h-1E7h, the single-drive byte at 146h, and on the 386SX
-// models a map of the backup RAM at F42000h-F47FFFh
+// models a map of the backup RAM at F42000h-F47FFFh and a probe of its odd bytes (the only write: the ROM clears that
+// RAM at every reset, and the probe puts both bytes and 0486h back)
 
 #define PORT_BYTES 0x800u
 #define WINDOW_BYTES 0x2000u
@@ -16,6 +17,26 @@
 #define VALID_TAG 0x4179u
 #define MAP_GROUP 32u
 #define EXTRA_ROWS 20
+#define PROBE_OFFSET 0x10u
+#define BACKUP_BLOCK0 0x02
+
+typedef struct
+{
+    uint8_t ran;
+    uint8_t found_even;
+    uint8_t found_odd;
+    uint8_t port_0486;
+    uint8_t even_written;
+    uint8_t odd_byte;
+    uint8_t even_after_odd;
+    uint8_t odd_after_odd;
+    uint16_t word;
+    uint8_t even_restored;
+    uint8_t odd_restored;
+    uint32_t dword;
+    uint32_t crc_before;
+    uint32_t crc_after;
+} backup_probe_t;
 
 typedef struct
 {
@@ -34,6 +55,7 @@ typedef struct
     uint32_t window_crc;
     uint32_t backup_crc;
     uint8_t backup_map[BACKUP_BLOCKS];
+    backup_probe_t probe;
     uint8_t bytes[WINDOW_BYTES];
 } cmos_t;
 
@@ -45,10 +67,11 @@ static int header_valid(const cmos_t* result);
 static int setup_valid(const cmos_t* result);
 static char group_mark(const uint8_t* bytes, uint32_t size);
 static int hex_rows(int row, const cmos_t* result, uint32_t first, uint32_t end);
+static void probe_backup(backup_probe_t* probe);
 
 const test_t g_test_cmos =
 {
-    "4.6", "CMOS CONTENTS", 0, TEST_RUN_ALL, 1, sizeof(cmos_t), 0, run, pages, page, summary
+    "4.6", "CMOS CONTENTS", 0, TEST_RUN_ALL, 3, sizeof(cmos_t), 0, run, pages, page, summary
 };
 
 static void run(void* data, uint32_t steps)
@@ -104,9 +127,42 @@ static void run(void* data, uint32_t steps)
 
         for (int block = 0; block < BACKUP_BLOCKS; block++)
             result->backup_map[block] = (uint8_t)group_mark((const uint8_t*)(BACKUP_BASE + (uint32_t)block * 256u), 256);
+
+        shell_step("BACKUP RAM ODD BYTES");
+        probe_backup(&result->probe);
     }
 
     result->ran = 1;
+}
+
+// An even byte set to A5h, its odd neighbour read by byte, then the pair by word and dword; then 5Ah written to the odd
+// byte and both read back. Block 0's write protect (0486h bit 1) is lifted for it and put back. The odd byte goes
+// back first, in case it lands in the even one, and the CRC of the whole backup RAM shows whether anything stayed
+static void probe_backup(backup_probe_t* probe)
+{
+    volatile uint8_t* bytes = (volatile uint8_t*)(BACKUP_BASE + PROBE_OFFSET);
+    uint8_t saved = in8(0x0486);
+
+    probe->crc_before = crc32((const void*)BACKUP_BASE, BACKUP_BLOCKS * 256u);
+    probe->port_0486 = saved;
+    probe->found_even = bytes[0];
+    probe->found_odd = bytes[1];
+    out8(0x0486, (uint8_t)(saved & ~BACKUP_BLOCK0));
+    bytes[0] = 0xA5;
+    probe->even_written = bytes[0];
+    probe->odd_byte = bytes[1];
+    probe->word = *(volatile uint16_t*)bytes;
+    probe->dword = *(volatile uint32_t*)bytes;
+    bytes[1] = 0x5A;
+    probe->even_after_odd = bytes[0];
+    probe->odd_after_odd = bytes[1];
+    bytes[1] = probe->found_odd;
+    bytes[0] = probe->found_even;
+    out8(0x0486, saved);
+    probe->even_restored = bytes[0];
+    probe->odd_restored = bytes[1];
+    probe->crc_after = crc32((const void*)BACKUP_BASE, BACKUP_BLOCKS * 256u);
+    probe->ran = 1;
 }
 
 static int header_valid(const cmos_t* result)
@@ -152,7 +208,7 @@ static int pages(const void* data, uint32_t steps)
 {
     (void)data;
     (void)steps;
-    return 6;
+    return 7;
 }
 
 static void page(const void* data, uint32_t steps, int number)
@@ -234,6 +290,37 @@ static void page(const void* data, uint32_t steps, int number)
 
         shell_line(row++, COLOR_GRAY, ". 00  F FF  P FF00  # OTHER");
         shell_line(row++, COLOR_GRAY, "PORTS COVER THE FIRST TWO ROWS");
+        return;
+    }
+
+    if (number == 6)
+    {
+        const backup_probe_t* probe = &result->probe;
+
+        shell_line(row++, COLOR_CYAN, "BACKUP RAM ODD BYTES, F42010H");
+
+        if (!probe->ran)
+        {
+            shell_line(row++, COLOR_GRAY, "NOT RUN: NO BACKUP RAM");
+            return;
+        }
+
+        shell_line(row++, COLOR_WHITE, "AS FOUND  EVEN %02X ODD %02X 0486H %02X", probe->found_even, probe->found_odd,
+            probe->port_0486);
+        shell_line(row++, COLOR_WHITE, "A5H TO EVEN: EVEN %02X", probe->even_written);
+        shell_line(row++, COLOR_WHITE, " ODD BY BYTE %02X", probe->odd_byte);
+        shell_line(row++, COLOR_WHITE, " WORD %04X", probe->word);
+        shell_line(row++, COLOR_WHITE, " DWORD %08X", probe->dword);
+        shell_line(row++, COLOR_WHITE, "5AH TO ODD: EVEN %02X ODD %02X", probe->even_after_odd, probe->odd_after_odd);
+        shell_line(row++, COLOR_GREEN, "ODD BYTE READ: %s", probe->odd_byte == probe->even_written ? "MIRRORS EVEN" :
+            probe->odd_byte == 0x00 ? "00H" : probe->odd_byte == 0xFF ? "FFH" : "OTHER");
+        shell_line(row++, COLOR_GREEN, "ODD BYTE WRITE: %s", probe->even_after_odd == 0x5A ? "LANDS IN EVEN" :
+            probe->odd_after_odd == 0x5A ? "OWN BYTE" : probe->even_after_odd == probe->even_written ? "IGNORED" :
+            "OTHER");
+        shell_line(row++, COLOR_WHITE, "PUT BACK: EVEN %02X ODD %02X", probe->even_restored, probe->odd_restored);
+        shell_line(row++, probe->crc_before == probe->crc_after ? COLOR_GREEN : COLOR_YELLOW, "BACKUP RAM %s",
+            probe->crc_before == probe->crc_after ? "AS FOUND" : "CHANGED");
+        shell_line(row++, COLOR_GRAY, "BOTH BYTES AND 0486H GO BACK");
         return;
     }
 

@@ -1,12 +1,13 @@
 #include "tests.h"
 
-// 2.4 CRTC start and timing registers (docs/12, HT-17, HT-31), in the shell's 15 kHz (VST1 = 6) and 31 kHz (VST1 = 0)
-// modes: where the first VSYNC and IRQ11 come after START goes 0 to 1, whether the syncs and IRQ11 run while stopped,
-// when HST, VST and VST2 written in the display or in VSYNC take effect, and VSYNC with VST1 at or past VST. Last, the
-// other two places that show the syncs, FR (CRTC register 1Eh) and CFF86h, edge by edge against FDA0h in a 15, a 31 and
-// a 24 kHz mode, and the CRTC's own counters through FR's display bits: where layer 0's window opens and closes after
-// VSYNC, the CRTC's own line period, and what stopping the CRTC, a longer HST or a longer VST does to them. Then the
-// same window field by field over 16 fields, with each field's HSYNC phase after VSYNC, for fields that alternate
+// 2.4 CRTC start and timing registers (docs/12, HT-17, HT-31, HT-58), in the shell's 15 kHz (VST1 = 6) and 31 kHz
+// (VST1 = 0) modes: where the first VSYNC and IRQ11 come after START goes 0 to 1, whether the syncs and IRQ11 run while
+// stopped, when HST, VST and VST2 written in the display or in VSYNC take effect, and VSYNC with VST1 at or past VST.
+// Last, the other two places that show the syncs, FR (CRTC register 1Eh) and CFF86h, edge by edge against FDA0h in a
+// 15, a 31 and a 24 kHz mode, and the CRTC's own counters through FR's display bits, also in a 31 kHz mode at
+// 21.05 MHz: where layer 0's window opens and closes after VSYNC, the CRTC's own line period, and what stopping the
+// CRTC, a longer HST or a longer VST does to them. Then the same window field by field over 16 fields, with each
+// field's HSYNC phase after VSYNC, for fields that alternate
 
 #define MODES 2
 #define REPEATS 8
@@ -24,6 +25,7 @@
 #define VST1_US 1000000u
 #define NO_EDGE 0x7FFFFFFF
 #define SOURCE_MODES 3
+#define COUNTER_MODES 4
 #define SOURCES 3
 #define SOURCE_CHANGES 16
 #define SOURCE_CALIBRATION 2000u
@@ -42,7 +44,7 @@
 #define FR_VSYNC 0x04
 #define FR_DSPTH0 0x10
 #define FR_DSPTV0 0x40
-#define FIELD_MODES 4
+#define FIELD_MODES 5
 #define FIELDS 16
 #define FIELD_TIMES 6
 #define FIELD_VSYNC 0
@@ -130,7 +132,7 @@ typedef struct
     sources_t sources[SOURCE_MODES];
     uint8_t fmr;
     uint8_t reserved[3];
-    counters_t counters[SOURCE_MODES];
+    counters_t counters[COUNTER_MODES];
     uint32_t stopped_lines[4];
     uint32_t hst_lines[4];
     counters_t vst_frames;
@@ -180,7 +182,8 @@ static const char* const k_mode_names[MODES] = { "S15", "S31" };
 static const char* const k_vst1_names[VST1_CASES] = { "VST1 > VST", "VST1 = VST", "VST1 = VST-1", "COLUMNS" };
 static const char* const k_source_modes[SOURCE_MODES] = { "S15", "S31", "P2" };
 static const char* const k_source_names[SOURCES] = { "FDA0", "FR", "F86" };
-static const char* const k_field_modes[FIELD_MODES] = { "P3N", "S15", "S31", "P1" };
+static const char* const k_counter_modes[COUNTER_MODES] = { "S15", "S31", "P2", "P1C" };
+static const char* const k_field_modes[FIELD_MODES] = { "P3N", "S15", "S31", "P1", "P1C" };
 
 static const test_step_t k_steps[] =
 {
@@ -197,7 +200,7 @@ static const test_step_t k_steps[] =
 
 const test_t g_test_crtc =
 {
-    "2.4", "CRTC START AND TIMING", 0, TEST_RUN_ALL, 4, sizeof(crtc_result_t), k_steps, run, pages, page, summary
+    "2.4", "CRTC START AND TIMING", 0, TEST_RUN_ALL, 5, sizeof(crtc_result_t), k_steps, run, pages, page, summary
 };
 
 static void run(void* data, uint32_t steps)
@@ -330,10 +333,10 @@ static void measure_fields(crtc_result_t* result)
 // HST + 64, and S15 with VST + 20 over three frames
 static void measure_counters(crtc_result_t* result)
 {
-    for (int i = 0; i < SOURCE_MODES; i++)
+    for (int i = 0; i < COUNTER_MODES; i++)
     {
-        shell_step("%s CRTC COUNTERS", k_source_modes[i]);
-        video_program(video_find(k_source_modes[i]));
+        shell_step("%s CRTC COUNTERS", k_counter_modes[i]);
+        video_program(video_find(k_counter_modes[i]));
         tb_delay(50000);
         scan_frames(&result->counters[i], COUNTER_FRAMES_US);
         count_lines(result->counters[i].lines, COUNTER_LINES_US);
@@ -1059,7 +1062,7 @@ static void draw_counters(const crtc_result_t* result, int row)
 
     shell_line(row++, COLOR_GRAY, "MODE   VDS AT  VDE AT    LINE  H WIN");
 
-    for (int i = 0; i < SOURCE_MODES; i++)
+    for (int i = 0; i < COUNTER_MODES; i++)
     {
         const counters_t* counters = &result->counters[i];
         int32_t vsync;
@@ -1071,11 +1074,11 @@ static void draw_counters(const crtc_result_t* result, int row)
 
         if (!edge_after(counters, 2, 0, &vsync, &vsync_end) || !edge_after(counters, 6, vsync, &open, &close))
         {
-            shell_line(row++, COLOR_YELLOW, "%-4s   NO VSYNC OR WINDOW %s", k_source_modes[i], text);
+            shell_line(row++, COLOR_YELLOW, "%-4s   NO VSYNC OR WINDOW %s", k_counter_modes[i], text);
             continue;
         }
 
-        shell_line(row++, COLOR_WHITE, "%-4s  %6d  %6d  %s", k_source_modes[i], (open - vsync) / 1000,
+        shell_line(row++, COLOR_WHITE, "%-4s  %6d  %6d  %s", k_counter_modes[i], (open - vsync) / 1000,
             close != NO_EDGE ? (close - vsync) / 1000 : -1, text);
     }
 

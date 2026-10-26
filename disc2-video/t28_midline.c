@@ -3,15 +3,18 @@
 #include "input.h"
 #include "raster.h"
 
-// 2.8 Writes during a line (docs/12, HT-19), for photos: every frame a register changes at display line 200 plus a
-// delay D after the HSYNC rise, and goes back two lines after VDE. Palette entry 1 (the whole single-page 256-color
-// screen, with a ruler column every 32 pixels, yellow every 64) turns white through blue, magenta and white as its
-// three components land; the other variants flip the priority bit, turn layer 0 off through FDA0h, change the layer
-// formats or mask the FM-R planes. Left/Right move D by one pass, Up/Down by ten, A picks the variant in step 3,
-// Select switches between the 31 kHz and the 15 kHz mode, B ends the step
+// 2.8 Writes during a line (docs/12, HT-19, HT-58), for photos: every frame a register changes at display line 200
+// plus a delay D after the HSYNC rise, and goes back two lines after VDE. Palette entry 1 (the whole single-page
+// 256-color screen, with a ruler column every 32 pixels, yellow every 64) turns white through blue, magenta and white
+// as its three components land; the other variants flip the priority bit, turn layer 0 off through FDA0h, change the
+// layer formats or mask the FM-R planes. A ruler every 10 lines, numbered every 20, shows the line a change lands on.
+// Left/Right move D by one pass, Up/Down by ten, A picks the variant in step 3, Select cycles the 15 kHz mode, the
+// 31 kHz one at 25.175 MHz and the 31 kHz one at 21.05 MHz (Chase H.Q.'s MODE 2 timing), B ends the step
 
 #define STEPS 3
 #define VARIANTS 4
+#define TIMINGS 3
+#define TIMING_15K 1
 #define WRITE_LINE 200
 #define TEXT_X 16
 #define TEXT_Y 16
@@ -49,6 +52,7 @@ static const char* mode_name(int step, int variant, int which);
 static void setup_mode(setup_t* setup, int step, int variant, int which);
 static int build(const setup_t* setup, int step, int variant, int delay, raster_event_t* events);
 static void overlay(const setup_t* setup, int step, int variant, int delay);
+static void rulers(const canvas_t* canvas, uint8_t color);
 
 static const char* const k_variant_names[VARIANTS] = { "PRIORITY BIT", "FDA0H LAYER 0 OFF", "0448H FORMATS",
     "CFF82H PLANES, MODE 1" };
@@ -63,7 +67,7 @@ static const test_step_t k_steps[] =
 
 const test_t g_test_midline =
 {
-    "2.8", "WRITES DURING A LINE", "PHOTOS", 0, 2, sizeof(midline_t), k_steps, run, pages, page, summary
+    "2.8", "WRITES DURING A LINE", "PHOTOS", 0, 3, sizeof(midline_t), k_steps, run, pages, page, summary
 };
 
 static void run(void* data, uint32_t steps)
@@ -84,7 +88,7 @@ static void run_step(midline_t* result, int step)
 {
     setup_t setup;
     raster_event_t events[RASTER_CAPACITY];
-    int which = 1;
+    int which = TIMING_15K;
     int variant = 0;
     int delay = 0;
     int dirty = 1;
@@ -124,7 +128,7 @@ static void run_step(midline_t* result, int step)
         else if ((event == INPUT_A && step == 2) || event == INPUT_SELECT)
         {
             variant = event == INPUT_A ? (variant + 1) % VARIANTS : variant;
-            which = event == INPUT_SELECT ? which ^ 1 : which;
+            which = event == INPUT_SELECT ? (which + 1) % TIMINGS : which;
             setup_mode(&setup, step, variant, which);
             delay = 0;
             dirty = 1;
@@ -134,10 +138,13 @@ static void run_step(midline_t* result, int step)
 
 static const char* mode_name(int step, int variant, int which)
 {
-    if (step < 2)
-        return which ? "P3N" : "P1";
+    static const char* const k_single[TIMINGS] = { "P1", "P3N", "P1C" };
+    static const char* const k_double[TIMINGS] = { "P28", "P14", "P28C" };
 
-    return variant == 3 ? "P6" : which ? "P14" : "P28";
+    if (step < 2)
+        return k_single[which];
+
+    return variant == 3 ? "P6" : k_double[which];
 }
 
 // Single-page steps: index 1 everywhere, index 2 every 64 pixels, orange between and, in step 2, index 3 on odd
@@ -168,19 +175,22 @@ static void setup_mode(setup_t* setup, int step, int variant, int which)
         for (int x = 0; x < setup->canvas.width; x += 32)
             canvas_fill(&setup->canvas, x, 0, 1, setup->canvas.height, (x & 63) == 0 ? 2 : CANVAS_ORANGE);
 
+        rulers(&setup->canvas, CANVAS_CYAN);
         setup->overlay = setup->canvas;
     }
     else
     {
-        int mode = variant == 3 ? 1 : which ? 11 : 10;
+        int mode = variant == 3 ? 1 : which == TIMING_15K ? 11 : 10;
 
         canvas_layer(&setup->canvas, mode, 0);
         canvas_window(&setup->canvas, setup->mode, 0);
         canvas_clear(&setup->canvas, variant == 3 ? CANVAS_YELLOW : CANVAS_RED);
+        rulers(&setup->canvas, CANVAS_WHITE);
         canvas_fill(&setup->canvas, TEXT_X - 4, TEXT_Y - 4, 248, 76, CANVAS_CLEAR);
         canvas_layer(&setup->overlay, mode, 1);
         canvas_window(&setup->overlay, setup->mode, 1);
         canvas_clear(&setup->overlay, variant == 0 ? CANVAS_GREEN : CANVAS_CLEAR);
+        rulers(&setup->overlay, CANVAS_WHITE);
 
         if (variant == 3 && (g_boot.port_0404 & 0x80) == 0)
             MMIO8(FMR_PAGE) = 0x27;
@@ -191,6 +201,21 @@ static void setup_mode(setup_t* setup, int step, int variant, int which)
     int vst1 = (int)video_register(setup->mode, CRTC_VST1);
     setup->write = ((int)video_register(setup->mode, CRTC_VDS0) - vst1) / 2 + WRITE_LINE;
     setup->reset = ((int)video_register(setup->mode, CRTC_VDE0) - vst1) / 2 + 2;
+}
+
+// A line every 10 display lines, numbered every 20 at the left and in the middle
+static void rulers(const canvas_t* canvas, uint8_t color)
+{
+    for (int y = 10; y < canvas->visible_height; y += 10)
+    {
+        canvas_fill(canvas, 0, y, canvas->width, 1, color);
+
+        if (y % 20 == 0)
+        {
+            canvas_printf(canvas, 2, y + 1, 1, color, CANVAS_BLACK, "%u", y);
+            canvas_printf(canvas, canvas->visible_width / 2 + 2, y + 1, 1, color, CANVAS_BLACK, "%u", y);
+        }
+    }
 }
 
 static int build(const setup_t* setup, int step, int variant, int delay, raster_event_t* events)

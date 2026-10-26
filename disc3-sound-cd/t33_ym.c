@@ -3,7 +3,8 @@
 // 3.3 YM3438 read ports and timers (docs/12, HT-14): what 04DAh, 04DCh and 04DEh read next to the status at 04D8h,
 // whether 04DCh latches, how long a latched value holds, the busy time after an address and a data write, and the
 // timer periods, which give the chip's clock. Every write here waits a fixed time instead of reading the busy flag,
-// so no 04D8h read happens unless the step makes it
+// so no 04D8h read happens unless the step makes it. Step 7 reads each port alone after an address or a data write to
+// either bank, right away and 100 us later, with and without a 04D8h read first
 
 #define REPEATS 8
 #define HOLD_POINTS 6
@@ -15,6 +16,9 @@
 #define FLAG_TIMEOUT 200000u
 #define LFO_REGISTER 0x22
 #define TIMER_CONTROL 0x27
+#define ALONE_WRITES 4
+#define ALONE_PORTS 4
+#define BANK1_REGISTER 0xA4
 
 typedef struct
 {
@@ -43,6 +47,7 @@ typedef struct
     uint32_t total_b[TIMER_B_CASES];
     uint32_t shortest_b[TIMER_B_CASES];
     uint32_t longest_b[TIMER_B_CASES];
+    uint8_t alone[ALONE_WRITES][2][ALONE_PORTS][2];
 } ym_t;
 
 static void run(void* data, uint32_t steps);
@@ -55,6 +60,8 @@ static void measure_flags(ym_t* result);
 static void measure_hold(ym_t* result);
 static void measure_latch(ym_t* result);
 static void measure_timers(ym_t* result);
+static void measure_alone(ym_t* result);
+static void alone_case(int write, int latched, uint16_t port, uint8_t* reads);
 static uint16_t busy_time(ym_t* result, int data, uint8_t* first);
 static void timer_period(ym_t* result, int b, uint16_t value, uint32_t* total, uint32_t* shortest, uint32_t* longest);
 static void start_timers(uint16_t a, uint8_t b, uint8_t control);
@@ -70,6 +77,7 @@ static const test_step_t k_steps[] =
     { "LATCH HOLD TIME 60 S", 0 },
     { "04DCH LATCH", 0 },
     { "TIMER PERIODS", 0 },
+    { "PORTS ALONE AFTER WRITES", 0 },
     { 0, 0 }
 };
 
@@ -80,10 +88,12 @@ static const uint32_t k_hold_us[HOLD_POINTS] = { 1000, 100000, 1000000, 10000000
 static const char* const k_hold_names[HOLD_POINTS] = { "1 MS", "100 MS", "1 S", "10 S", "30 S", "60 S" };
 static const uint16_t k_timer_a[TIMER_A_CASES] = { 0, 512, 1000 };
 static const uint8_t k_timer_b[TIMER_B_CASES] = { 0, 255 };
+static const uint16_t k_alone_ports[ALONE_PORTS] = { 0x04D8, 0x04DA, 0x04DC, 0x04DE };
+static const char* const k_alone_names[ALONE_WRITES] = { "A0", "D0", "A1", "D1" };
 
 const test_t g_test_ym =
 {
-    "3.3", "YM3438 READ PORTS", 0, TEST_RUN_ALL, 1, sizeof(ym_t), k_steps, run, pages, page, summary
+    "3.3", "YM3438 READ PORTS", 0, TEST_RUN_ALL, 2, sizeof(ym_t), k_steps, run, pages, page, summary
 };
 
 static void run(void* data, uint32_t steps)
@@ -107,6 +117,9 @@ static void run(void* data, uint32_t steps)
 
     if ((steps & 0x20) != 0)
         measure_timers(result);
+
+    if ((steps & 0x40) != 0)
+        measure_alone(result);
 
     snd_ym(0, TIMER_CONTROL, 0x30);
 }
@@ -300,6 +313,45 @@ static void timer_period(ym_t* result, int b, uint16_t value, uint32_t* total, u
     snd_ym(0, TIMER_CONTROL, 0x30);
 }
 
+static void measure_alone(ym_t* result)
+{
+    shell_step("PORTS ALONE AFTER WRITES");
+
+    for (int write = 0; write < ALONE_WRITES; write++)
+    {
+        for (int latched = 0; latched < 2; latched++)
+        {
+            for (int port = 0; port < ALONE_PORTS; port++)
+                alone_case(write, latched, k_alone_ports[port], result->alone[write][latched][port]);
+        }
+    }
+}
+
+// From idle with a clear latch: an address write (A) or an address and a data write (D) to bank 0 (LFO, 00h) or bank 1
+// (channel 4's block and F-number, 00h), optionally a 04D8h read, then the port alone, now and 100 us later
+static void alone_case(int write, int latched, uint16_t port, uint8_t* reads)
+{
+    uint16_t address = (write & 0x02) != 0 ? 0x04DC : 0x04D8;
+    uint8_t reg = (write & 0x02) != 0 ? BANK1_REGISTER : LFO_REGISTER;
+
+    tb_delay(WRITE_GAP);
+    (void)in8(0x04D8);
+    out8(address, reg);
+
+    if ((write & 0x01) != 0)
+    {
+        tb_delay(WRITE_GAP);
+        out8((uint16_t)(address + 2), 0x00);
+    }
+
+    if (latched)
+        (void)in8(0x04D8);
+
+    reads[0] = in8(port);
+    tb_delay(100);
+    reads[1] = in8(port);
+}
+
 static void start_timers(uint16_t a, uint8_t b, uint8_t control)
 {
     snd_ym(0, TIMER_CONTROL, 0x30);
@@ -347,14 +399,13 @@ static int pages(const void* data, uint32_t steps)
 {
     (void)data;
     (void)steps;
-    return 4;
+    return 5;
 }
 
 static void page(const void* data, uint32_t steps, int number)
 {
     const ym_t* result = (const ym_t*)data;
     int row = SHELL_BODY_TOP;
-    (void)steps;
 
     if (number == 0)
     {
@@ -433,6 +484,34 @@ static void page(const void* data, uint32_t steps, int number)
 
         shell_line(row++, COLOR_WHITE, "04D8H AT THE END %02X", result->hold_live);
         shell_line(row++, COLOR_GRAY, "DIE MODEL: 03 UNTIL ~30 S, THEN 00");
+        return;
+    }
+
+    if (number == 4)
+    {
+        shell_line(row++, COLOR_CYAN, "PORTS ALONE AFTER A WRITE, NOW/100US");
+
+        if ((steps & 0x40) == 0)
+        {
+            shell_line(row++, COLOR_GRAY, "NOT RUN");
+            return;
+        }
+
+        shell_line(row++, COLOR_GRAY, "WRITE   04D8  04DA  04DC  04DE");
+
+        for (int write = 0; write < ALONE_WRITES; write++)
+        {
+            for (int latched = 0; latched < 2; latched++)
+            {
+                const uint8_t(*reads)[2] = result->alone[write][latched];
+                shell_line(row++, COLOR_WHITE, "%s %s  %02X/%02X %02X/%02X %02X/%02X %02X/%02X", k_alone_names[write],
+                    latched ? "L" : "-", reads[0][0], reads[0][1], reads[1][0], reads[1][1], reads[2][0], reads[2][1],
+                    reads[3][0], reads[3][1]);
+            }
+        }
+
+        shell_line(row++, COLOR_GRAY, "A ADDRESS, D ADDRESS+DATA, BANK 0/1;");
+        shell_line(row++, COLOR_GRAY, "L: 04D8H READ BEFORE THE PORT");
         return;
     }
 

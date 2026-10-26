@@ -68,6 +68,7 @@ uint32_t fdc_period(void);
 uint8_t fdc_read_address(uint8_t command, uint8_t* id, uint32_t timeout, uint32_t* end);
 uint8_t fdc_read_dma(uint8_t command, uint16_t count, uint32_t timeout, uint32_t* elapsed, uint16_t* moved);
 uint8_t fdc_restore(uint8_t rate, uint32_t* elapsed);
+uint8_t fdc_type1(uint8_t command, uint32_t* elapsed);
 uint8_t fdc_seek(uint8_t from, uint8_t to, uint8_t command, uint32_t* elapsed);
 int fdc_spin_up(uint32_t timeout);
 int fdc_detect(fdc_media_t* media);

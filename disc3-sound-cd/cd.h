@@ -67,6 +67,7 @@
 #define CD_UNTIL_SEEK 0x04
 #define CD_NO_WAIT 0x08
 #define CD_HOLD_DMA 0x10
+#define CD_KEEP_QUEUE 0x20
 
 // Pseudo packets CD_PACKET_DMA and CD_PACKET_DMA_TIMEOUT mark a DMA end, bytes 1-3 the LBA its data carried;
 // CD_PACKET_DMA_NONE a DMA that DTS never showed

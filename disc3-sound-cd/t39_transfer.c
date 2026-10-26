@@ -536,6 +536,7 @@ static void step_sizes(transfer_t* result)
         if ((cd_master() & CD_MASTER_DTS) != 0)
         {
             result->size_flags[form] = 2;
+            out8(0x00AF, 0x0F);
             cd_reset();
             tb_delay(10000);
         }

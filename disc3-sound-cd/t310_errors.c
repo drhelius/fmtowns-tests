@@ -2,8 +2,8 @@
 
 // 3.10 CDC errors and edge cases (docs/12, HT-50): reads outside the data, malformed and extra parameters, commands
 // without STATUS, every command byte the BIOS doesn't use, SRST at four points, a command sent while a read delivers,
-// and the CDC ports read with nothing queued. Each case logs its packets; the drive is checked with a good read
-// before and after the cases that could upset it
+// the CDC ports read with nothing queued, and 80h written while a TOC reply is still queued. Each case logs its
+// packets; the drive is checked with a good read before and after the cases that could upset it
 
 #define OUTSIDE 5
 #define MALFORMED 6
@@ -13,6 +13,9 @@
 #define DURING 3
 #define IDLE_PORTS 8
 #define UNKNOWN_QUIET 100000u
+#define LEFTOVERS 3
+#define LONE_RUNS 8
+#define NO_REPLY 0xFF
 
 typedef struct
 {
@@ -35,6 +38,18 @@ typedef struct
 
 typedef struct
 {
+    cd_keep_t log;
+    uint8_t first[4];
+    uint8_t master;
+    uint8_t old;
+    uint8_t reply;
+    uint8_t total;
+    uint32_t write;
+    uint32_t reply_time;
+} leftover_t;
+
+typedef struct
+{
     cd_keep_t outside[OUTSIDE];
     uint8_t good_before[OUTSIDE];
     uint8_t good_after[OUTSIDE];
@@ -50,6 +65,11 @@ typedef struct
     uint8_t idle_ports[IDLE_PORTS];
     uint8_t resets;
     uint8_t reserved2[3];
+    leftover_t leftovers[LEFTOVERS];
+    uint32_t lone_min;
+    uint32_t lone_max;
+    uint8_t lone_runs;
+    uint8_t reserved3[3];
 } errors_t;
 
 static void run(void* data, uint32_t steps);
@@ -63,9 +83,12 @@ static void step_malformed(errors_t* result);
 static void step_plain(errors_t* result);
 static void step_pending(errors_t* result);
 static void step_unknown(errors_t* result);
-static void step_srst(errors_t* result);
+static void step_srst(errors_t* result, int dma);
 static void step_during(errors_t* result);
 static void step_idle(errors_t* result);
+static void step_leftover(errors_t* result);
+static void leftover(leftover_t* entry, uint32_t delay);
+static const char* leftover_verdict(const leftover_t* entry);
 static void raw_read(cd_log_t* log, const uint8_t* parameters, int count, uint32_t lba);
 
 static const test_step_t k_steps[] =
@@ -77,6 +100,8 @@ static const test_step_t k_steps[] =
     { "SRST", 0 },
     { "COMMAND DURING A READ", 0 },
     { "IDLE PORT READS", 0 },
+    { "LEFTOVER PACKETS", 0 },
+    { "SRST DURING A DMA", TEST_RISKY },
     { 0, 0 }
 };
 
@@ -89,10 +114,11 @@ static const uint8_t k_plain[PLAIN - 1] = { CD_STATE, CD_SEEK, CD_READ, CD_PLAY,
 static const char* const k_srst[SRST_CASES] = { "IDLE", "BETWEEN SECTORS", "DURING A DMA", "DURING CD-DA" };
 static const char* const k_during[DURING] = { "80H", "00H TO 5000", "02H OF 3000" };
 static const uint16_t k_ports[IDLE_PORTS] = { 0x04C0, 0x04C2, 0x04C4, 0x04C6, 0x04C8, 0x04CA, 0x04CC, 0x04CD };
+static const uint32_t k_leftover_us[LEFTOVERS] = { 10, 500, 2000 };
 
 const test_t g_test_errors =
 {
-    "3.10", "CDC ERRORS, EDGE CASES", 0, TEST_RUN_ALL, 1, sizeof(errors_t), k_steps, run, pages, page, summary
+    "3.10", "CDC ERRORS, EDGE CASES", 0, TEST_RUN_ALL, 3, sizeof(errors_t), k_steps, run, pages, page, summary
 };
 
 static void run(void* data, uint32_t steps)
@@ -119,10 +145,16 @@ static void run(void* data, uint32_t steps)
         step_unknown(result);
 
     if ((steps & 0x10) != 0)
-        step_srst(result);
+        step_srst(result, 0);
 
     if ((steps & 0x20) != 0)
         step_during(result);
+
+    if ((steps & 0x80) != 0)
+        step_leftover(result);
+
+    if ((steps & 0x100) != 0)
+        step_srst(result, 1);
 
     cd_masks(0);
     cd_quiet();
@@ -374,8 +406,9 @@ static void step_unknown(errors_t* result)
     }
 }
 
-// 04C0h and IRQ9 right after the reset and 1 ms later, then every packet in 500 ms; both masks set
-static void step_srst(errors_t* result)
+// 04C0h and IRQ9 right after the reset and 1 ms later, then every packet in 500 ms; both masks set. The reset during
+// a DMA is a step of its own: it locked the Marty 2
+static void step_srst(errors_t* result, int dma)
 {
     for (int i = 0; i < SRST_CASES; i++)
     {
@@ -383,6 +416,9 @@ static void step_srst(errors_t* result)
         uint8_t parameters[8];
         cd_subq_t subq;
         cd_log_t log;
+
+        if ((i == 2) != dma)
+            continue;
 
         shell_step("SRST %s", k_srst[i]);
         cd_masks(CD_CONTROL_SMIM | CD_CONTROL_DEIM);
@@ -470,6 +506,93 @@ static void step_during(errors_t* result)
     }
 }
 
+// HT-50 q6: 80h+STATUS written 10 us, 500 us and 2 ms after the first packet of a TOC reply, the rest of the TOC
+// unread; then eight lone 80h+STATUS for the time to their first packet
+static void step_leftover(errors_t* result)
+{
+    for (int i = 0; i < LEFTOVERS; i++)
+    {
+        shell_step("LEFTOVER TOC, 80H AFTER %u US", k_leftover_us[i]);
+        leftover(&result->leftovers[i], k_leftover_us[i]);
+        recover(result);
+    }
+
+    result->lone_min = 0xFFFFFFFFu;
+
+    for (int i = 0; i < LONE_RUNS; i++)
+    {
+        cd_log_t log;
+
+        shell_step("LONE 80H %u/%u", i + 1, LONE_RUNS);
+        cd_state(&log);
+
+        if (log.count == 0)
+            continue;
+
+        uint32_t first = log.packets[0].time;
+        result->lone_min = first < result->lone_min ? first : result->lone_min;
+        result->lone_max = first > result->lone_max ? first : result->lone_max;
+        result->lone_runs++;
+    }
+}
+
+// Old TOC packets are 16h and 17h; the reply is the first packet that isn't
+static void leftover(leftover_t* entry, uint32_t delay)
+{
+    static const uint8_t k_zero[8];
+    cd_log_t log;
+
+    entry->reply = NO_REPLY;
+    cd_send(&log, CD_TOC | CD_STATUS, k_zero, 0);
+
+    uint32_t start = tb_now();
+
+    while ((cd_master() & CD_MASTER_SRQ) == 0)
+    {
+        if (tb_now() - start > 2000000u)
+            return;
+    }
+
+    for (int k = 0; k < 4; k++)
+        entry->first[k] = in8(CD_COMMAND);
+
+    uint32_t read = tb_now();
+    tb_delay(delay);
+    entry->master = cd_master();
+    cd_send(&log, CD_STATE | CD_STATUS, k_zero, CD_NO_WAIT | CD_KEEP_QUEUE);
+    entry->write = log.start - read;
+    cd_collect(&log, 1000000u, 100000u, 3000000u, 0);
+    cd_keep(&entry->log, &log);
+    entry->total = log.total;
+
+    for (int k = 0; k < log.count; k++)
+    {
+        uint8_t kind = log.packets[k].bytes[0];
+
+        if (kind == 0x16 || kind == 0x17)
+        {
+            if (entry->reply == NO_REPLY)
+                entry->old++;
+
+            continue;
+        }
+
+        if (entry->reply == NO_REPLY)
+        {
+            entry->reply = (uint8_t)k;
+            entry->reply_time = log.packets[k].time;
+        }
+    }
+}
+
+static const char* leftover_verdict(const leftover_t* entry)
+{
+    if (entry->reply == NO_REPLY)
+        return entry->total != 0 ? "OLD TOC, NO REPLY" : "NOTHING";
+
+    return entry->old == 0 ? "OLD TOC GONE" : "OLD TOC FIRST";
+}
+
 static void step_idle(errors_t* result)
 {
     shell_step("IDLE PORT READS");
@@ -482,7 +605,7 @@ static int pages(const void* data, uint32_t steps)
 {
     (void)data;
     (void)steps;
-    return 12;
+    return 13;
 }
 
 static void page(const void* data, uint32_t steps, int number)
@@ -490,7 +613,6 @@ static void page(const void* data, uint32_t steps, int number)
     const errors_t* result = (const errors_t*)data;
     int row = SHELL_BODY_TOP;
     char label[32];
-    (void)steps;
 
     if (number <= 1)
     {
@@ -598,6 +720,13 @@ static void page(const void* data, uint32_t steps, int number)
         {
             const srst_t* entry = &result->srst[i];
             shell_line(row++, COLOR_CYAN, "SRST %s", k_srst[i]);
+
+            if (i == 2 && (steps & 0x100) == 0)
+            {
+                shell_line(row++, COLOR_GRAY, "STEP 9 NOT RUN");
+                continue;
+            }
+
             shell_line(row++, COLOR_WHITE, "04C0H %02X IRQ %u, 1 MS %02X IRQ %u", entry->master[0], entry->irq[0],
                 entry->master[1], entry->irq[1]);
             row = cd_draw_packets(row, entry->log.packets, entry->log.count);
@@ -610,6 +739,38 @@ static void page(const void* data, uint32_t steps, int number)
         if (number == 10)
             shell_line(row++, COLOR_GRAY, "DATA BOOK: THE RESET RAISES AN IRQ");
 
+        return;
+    }
+
+    if (number == 12)
+    {
+        shell_line(row++, COLOR_CYAN, "05H, ONE PACKET READ, THEN 80H");
+
+        for (int i = 0; i < LEFTOVERS; i++)
+        {
+            const leftover_t* entry = &result->leftovers[i];
+            uint32_t reply = entry->reply_time;
+
+            shell_line(row++, COLOR_GRAY, "80H %u US AFTER, 04C0H %02X: %u PKTS", entry->write, entry->master,
+                entry->total);
+
+            if (entry->reply == NO_REPLY)
+                shell_line(row++, COLOR_WHITE, " %s, %u OLD", leftover_verdict(entry), entry->old);
+            else
+                shell_line(row++, COLOR_WHITE, " %s, %u OLD, REPLY %u.%u MS", leftover_verdict(entry), entry->old,
+                    reply / 1000u, reply / 100u % 10u);
+
+            row = cd_draw_packets(row, entry->log.packets, entry->log.count < 4 ? entry->log.count : 4);
+        }
+
+        row++;
+
+        if (result->lone_runs != 0)
+            shell_line(row++, COLOR_WHITE, "LONE 80H FIRST PACKET %u-%u US", result->lone_min, result->lone_max);
+        else
+            shell_line(row++, COLOR_GRAY, "LONE 80H: NO PACKET");
+
+        shell_line(row++, COLOR_GRAY, "OLD: 16H/17H READ BEFORE THE REPLY");
         return;
     }
 

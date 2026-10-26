@@ -2,8 +2,9 @@
 
 // 3.11 Lid and disc change (docs/12, HT-51): needs someone at the drive. The screen says when to open and close the
 // lid; 80h+STATUS every 100 ms logs each answer that differs from the one before. A read with the lid open, the first
-// reads after closing it, the time from closing to a good read (up to eight times), and the lid opened during CD-DA.
-// Expected: 00 09 while not ready, 21 08 once at the first access after the change
+// reads after closing it, the time from closing to a good read (up to eight times), the lid opened during CD-DA, and a
+// TOC read as the first command after a change, then 80h. Expected: 00 09 while not ready, 21 08 once at the first
+// access after the change
 
 #define CHANGES 48
 #define CDDA_CHANGES 32
@@ -25,6 +26,12 @@ typedef struct
     uint32_t spin[SPINS];
     uint32_t spin_attempts[SPINS];
     cd_packet_t cdda[CDDA_CHANGES];
+    cd_keep_t toc_first;
+    cd_keep_t toc_answer;
+    cd_keep_t state_after;
+    uint8_t toc_attempts;
+    uint8_t toc_total;
+    uint8_t reserved[2];
 } lid_t;
 
 static void run(void* data, uint32_t steps);
@@ -36,6 +43,8 @@ static int wait_button(void);
 static int pressed(void);
 static void watch(cd_packet_t* changes, uint8_t* count, int capacity, int subq);
 static uint32_t read_until_good(uint32_t* attempts, cd_keep_t* first);
+static void toc_after_change(lid_t* result);
+static int not_ready(const cd_log_t* log);
 
 static const test_step_t k_steps[] =
 {
@@ -43,12 +52,13 @@ static const test_step_t k_steps[] =
     { "READS, LID OPEN, CLOSED", 0 },
     { "SPIN-UP TIME X8", 0 },
     { "LID OPEN DURING CD-DA", 0 },
+    { "CHANGE, THEN A TOC READ", 0 },
     { 0, 0 }
 };
 
 const test_t g_test_lid =
 {
-    "3.11", "LID AND DISC CHANGE", "LID", 0, 1, sizeof(lid_t), k_steps, run, pages, page, summary
+    "3.11", "LID AND DISC CHANGE", "LID", 0, 2, sizeof(lid_t), k_steps, run, pages, page, summary
 };
 
 static void run(void* data, uint32_t steps)
@@ -107,6 +117,16 @@ static void run(void* data, uint32_t steps)
         cd_play(&log, cd_track(7), cd_track_end(7) + 1, 0);
         prompt("TRACK 7 PLAYS: OPEN THE LID, CLOSE", "IT AFTER 5 S, PRESS A WHEN IT SPINS");
         watch(result->cdda, &result->cdda_count, CDDA_CHANGES, 1);
+    }
+
+    if ((steps & 0x10) != 0)
+    {
+        shell_step("CHANGE, THEN A TOC READ");
+        cd_quiet();
+        prompt("OPEN THE LID, WAIT 5 S, CLOSE IT,", "THEN PRESS A ONCE THE DISC SPINS");
+
+        if (wait_button())
+            toc_after_change(result);
     }
 
     scr_clear_rows(SHELL_BODY_TOP, SHELL_BODY_BOTTOM);
@@ -213,11 +233,49 @@ static uint32_t read_until_good(uint32_t* attempts, cd_keep_t* first)
     return 0;
 }
 
+// HT-51 q2: TOC reads every 200 ms until one answers anything but not ready, then 80h; the first try and the answer
+// are kept
+static void toc_after_change(lid_t* result)
+{
+    static const uint8_t k_zero[8];
+    uint32_t start = tb_now();
+    cd_log_t log;
+
+    while (tb_now() - start < READ_LIMIT_US)
+    {
+        cd_send(&log, CD_TOC | CD_STATUS, k_zero, 0);
+        cd_collect(&log, 2000000u, 100000u, 3000000u, 0);
+        result->toc_attempts++;
+
+        if (result->toc_attempts == 1)
+            cd_keep(&result->toc_first, &log);
+
+        if (!not_ready(&log))
+            break;
+
+        tb_delay(200000u);
+    }
+
+    cd_keep(&result->toc_answer, &log);
+    result->toc_total = log.total;
+    cd_state(&log);
+    cd_keep(&result->state_after, &log);
+}
+
+static int not_ready(const cd_log_t* log)
+{
+    if (log->count == 0)
+        return 1;
+
+    const uint8_t* bytes = log->packets[0].bytes;
+    return (bytes[0] == 0x21 || bytes[0] == 0x00) && bytes[1] == 0x09;
+}
+
 static int pages(const void* data, uint32_t steps)
 {
     (void)data;
     (void)steps;
-    return 4;
+    return 5;
 }
 
 static void page(const void* data, uint32_t steps, int number)
@@ -238,6 +296,30 @@ static void page(const void* data, uint32_t steps, int number)
             shell_line(row++, COLOR_GRAY, "06 V MM SS: SUB-Q VALID, POSITION");
 
         shell_line(row++, COLOR_GRAY, "EXPECTED: 0009 NOT READY, 2108 ONCE");
+        return;
+    }
+
+    if (number == 4)
+    {
+        char label[32];
+
+        if (result->toc_attempts == 0)
+        {
+            shell_line(row++, COLOR_GRAY, "TOC AFTER A CHANGE NOT RUN");
+            return;
+        }
+
+        row = cd_draw_keep(row, "TOC, FIRST TRY", &result->toc_first);
+
+        if (result->toc_attempts > 1)
+        {
+            fmt_format(label, sizeof(label), "TOC, TRY %u", result->toc_attempts);
+            row = cd_draw_keep(row, label, &result->toc_answer);
+        }
+
+        row = cd_draw_keep(row, "THEN", &result->state_after);
+        shell_line(row++, COLOR_WHITE, "TOC ANSWER %u PACKETS", result->toc_total);
+        shell_line(row++, COLOR_GRAY, "2108 INSTEAD, BEFORE THE TOC, NONE?");
         return;
     }
 

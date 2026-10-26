@@ -2,14 +2,18 @@
 
 // 4.8 Port timing: 4,096 accesses of each port in unrolled runs of 16, so code fetch drops out, the fastest of four,
 // for the ports of this disc's devices that read and write without side effects. The empty loop's own time is shown,
-// not taken off
+// not taken off. Page 2 writes ports of other devices with the value they read (3000h is the disc's one CMOS write,
+// of the byte it holds) or a harmless one (OCW3 read-IRR, the CRTC and output register indexes), to find which ports
+// write as fast as the FDC's
 
-#define PORTS 18
+#define PORTS 27
+#define FIRST_PAGE_PORTS 18
 #define PASSES 256
 #define ACCESSES (PASSES * 16)
 #define REPEATS 4
 #define READ 0x01
 #define WRITE 0x02
+#define CURRENT 0x04
 #define TIME_BASE_READS 1000
 
 typedef struct
@@ -43,12 +47,14 @@ static const port_case_t k_ports[PORTS] =
     { 0x0208, READ | WRITE, 0x00 }, { 0x020C, WRITE, 0x00 }, { 0x020D, READ, 0 }, { 0x020E, READ, 0 },
     { 0x3000, READ, 0 }, { 0x0600, READ, 0 }, { 0x0604, READ | WRITE, 0x00 }, { 0x04D2, READ, 0 },
     { 0x04D6, READ | WRITE, 0x0F }, { 0x0C32, READ, 0 }, { 0x0034, READ, 0 }, { 0x00A1, READ, 0 },
-    { 0x00AB, READ, 0 }, { 0x0480, READ, 0 }
+    { 0x00AB, READ, 0 }, { 0x0480, READ, 0 }, { 0x0000, WRITE, 0x0A }, { 0x0002, WRITE | CURRENT, 0 },
+    { 0x0010, WRITE, 0x0A }, { 0x0012, WRITE | CURRENT, 0 }, { 0x0440, WRITE, 0x00 }, { 0x0448, WRITE, 0x00 },
+    { 0x3000, WRITE | CURRENT, 0 }, { 0x04D5, WRITE | CURRENT, 0 }, { 0x04EA, WRITE | CURRENT, 0 }
 };
 
 const test_t g_test_ports =
 {
-    "4.8", "PORT TIMING", 0, TEST_RUN_ALL, 1, sizeof(ports_t), 0, run, pages, page, summary
+    "4.8", "PORT TIMING", 0, TEST_RUN_ALL, 2, sizeof(ports_t), 0, run, pages, page, summary
 };
 
 static void run(void* data, uint32_t steps)
@@ -96,8 +102,9 @@ static void run(void* data, uint32_t steps)
 
             if ((entry->access & WRITE) != 0)
             {
+                uint8_t value = (entry->access & CURRENT) != 0 ? in8(entry->port) : entry->value;
                 start = tb_now();
-                ports_writes(entry->port, entry->value, PASSES);
+                ports_writes(entry->port, value, PASSES);
                 elapsed = tb_now() - start;
                 result->write_us[i] = elapsed < result->write_us[i] ? elapsed : result->write_us[i];
             }
@@ -126,20 +133,21 @@ static int pages(const void* data, uint32_t steps)
 {
     (void)data;
     (void)steps;
-    return 1;
+    return 2;
 }
 
 static void page(const void* data, uint32_t steps, int number)
 {
     const ports_t* result = (const ports_t*)data;
     int row = SHELL_BODY_TOP;
+    int first = number == 0 ? 0 : FIRST_PAGE_PORTS;
+    int end = number == 0 ? FIRST_PAGE_PORTS : PORTS;
     (void)steps;
-    (void)number;
 
-    shell_line(row++, COLOR_CYAN, "NS AN ACCESS, 16 IN A RUN");
+    shell_line(row++, COLOR_CYAN, number == 0 ? "NS AN ACCESS, 16 IN A RUN" : "WRITES OF THE VALUE FOUND OR HARMLESS");
     shell_line(row++, COLOR_GRAY, "PORT     READ    WRITE");
 
-    for (int i = 0; i < PORTS; i++)
+    for (int i = first; i < end; i++)
     {
         char read[12];
         char write[12];
@@ -157,6 +165,13 @@ static void page(const void* data, uint32_t steps, int number)
             fmt_copy(write, "      -", sizeof(write));
 
         shell_line(row++, COLOR_WHITE, "%04XH  %s  %s", k_ports[i].port, read, write);
+    }
+
+    if (number != 0)
+    {
+        shell_line(row++, COLOR_GRAY, "0000H/0010H OCW3 0AH, 0440H/0448H 00H,");
+        shell_line(row++, COLOR_GRAY, "THE OTHERS THE VALUE THEY READ");
+        return;
     }
 
     shell_line(row++, COLOR_GRAY, "EMPTY LOOP %u US FOR %u PASSES", result->empty_us, PASSES);

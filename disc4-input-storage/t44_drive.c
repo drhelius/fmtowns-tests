@@ -1,8 +1,10 @@
 #include "tests.h"
 
-// 4.4 Floppy drive signals (docs/12, HT-28, HT-6, HT-41), drive 0. 0208h is read with the drive selected; 0200h after
-// a forced end, so it carries the type I meanings. Swaps and DSKCHG need someone at the drive; the masked request
-// works with or without a disk; the motor, index and seek steps want a disk in, and say so when there is none
+// 4.4 Floppy drive signals (docs/12, HT-28, HT-6, HT-41, HT-54), drive 0. 0208h is read with the drive selected;
+// 0200h after a forced end, so it carries the type I meanings. Swaps and DSKCHG need someone at the drive; the masked
+// request works with or without a disk; the motor, index and seek steps want a disk in, and say so when there is none.
+// Step 4 adds four spin-ups with every READY and index edge from the motor write; step 5 adds verified seeks and
+// Restores from an unloaded head with h = 0 and 1, and Read Address after the head unloads by itself or by an h = 0 seek
 
 #define CHANGES 48
 #define SWAP_US 30000000u
@@ -16,8 +18,15 @@
 #define SPIN_DOWN_US 2000000u
 #define RATES 4
 #define HEAD_LOADS 3
-#define DSKCHG_READS 6
+#define DSKCHG_READS 7
 #define STATUS_MASK 0xC4
+#define SPINUPS 4
+#define SPINUP_EDGES 16
+#define SPINUP_US 1000000u
+#define VERIFY_RUNS 8
+#define UNLOAD_READS 3
+#define UNLOAD_TURNS 16
+#define EDGE_HIGH 0x80000000u
 #define SEEK_TRACK 10
 #define NEVER 0xFFFFFFFFu
 
@@ -86,6 +95,24 @@ typedef struct
 
 typedef struct
 {
+    uint32_t ready;
+    uint8_t count;
+    uint8_t reserved[3];
+    uint32_t edges[SPINUP_EDGES];
+} spinup_t;
+
+typedef struct
+{
+    uint8_t ran;
+    uint8_t status[2][2];
+    uint8_t unload_status[2][UNLOAD_READS];
+    uint8_t reserved;
+    uint32_t times[2][2][VERIFY_RUNS];
+    uint32_t unload_time[2][UNLOAD_READS];
+} verifies_t;
+
+typedef struct
+{
     uint8_t ran;
     uint8_t disk;
     uint8_t dskchg_ran;
@@ -97,6 +124,8 @@ typedef struct
     request_log_t requests[REQUEST_CASES];
     spin_t spin[2];
     seeks_t seeks;
+    spinup_t spinups[SPINUPS];
+    verifies_t verifies;
 } drive_t;
 
 static void run(void* data, uint32_t steps);
@@ -111,6 +140,9 @@ static void step_seeks(drive_t* result);
 static void watch(swap_log_t* log, int motor);
 static void request(request_log_t* log, int variant);
 static void spin(spin_t* entry, int high_speed);
+static void spin_up(spinup_t* entry);
+static void verified_runs(drive_t* result);
+static void unload_reads(drive_t* result);
 static uint32_t average(const uint32_t* values, int count);
 static void milliseconds(char* text, int size, uint32_t microseconds);
 static uint32_t not_ready_time(const swap_log_t* log, uint32_t* longest);
@@ -133,7 +165,7 @@ static const char* const k_request_names[REQUEST_CASES] =
 
 const test_t g_test_drive =
 {
-    "4.4", "FLOPPY DRIVE SIGNALS", "DISK", TEST_RUN_ALL, 1, sizeof(drive_t), k_steps, run, pages, page, summary
+    "4.4", "FLOPPY DRIVE SIGNALS", "DISK", TEST_RUN_ALL, 3, sizeof(drive_t), k_steps, run, pages, page, summary
 };
 
 static void run(void* data, uint32_t steps)
@@ -235,13 +267,17 @@ static void step_swaps(drive_t* result)
     result->ran |= 0x01;
 }
 
-// Bit 0 read before the swap, twice after it, after a Restore, after a seek to track 2 and half a second later
+// Bit 0 read before the swap after steps to track 2 and back, twice after it, after a Force Interrupt (a command with
+// no motion), after a Restore that finds track 0 (no step pulse), after a seek to track 2 and half a second later
 static void step_dskchg(drive_t* result)
 {
     shell_step("DSKCHG");
     fdc_select(0, 1);
     fdc_control((uint8_t)(FDC_MFM | FDC_MOTOR));
     tb_delay(500000u);
+    fdc_restore(3, 0);
+    fdc_seek(0, 2, 0x13, 0);
+    fdc_restore(3, 0);
     fdc_force();
     result->dskchg_drive[0] = in8(FDC_DRIVE);
     result->dskchg_status[0] = in8(FDC_COMMAND);
@@ -255,13 +291,15 @@ static void step_dskchg(drive_t* result)
     result->dskchg_drive[2] = in8(FDC_DRIVE);
     result->dskchg_status[2] = in8(FDC_COMMAND);
     tb_delay(500000u);
-    result->dskchg_status[3] = fdc_restore(3, 0);
+    result->dskchg_status[3] = fdc_force();
     result->dskchg_drive[3] = in8(FDC_DRIVE);
-    result->dskchg_status[4] = fdc_seek(0, 2, 0x13, 0);
+    result->dskchg_status[4] = fdc_restore(3, 0);
     result->dskchg_drive[4] = in8(FDC_DRIVE);
-    tb_delay(500000u);
+    result->dskchg_status[5] = fdc_seek(0, 2, 0x13, 0);
     result->dskchg_drive[5] = in8(FDC_DRIVE);
-    result->dskchg_status[5] = in8(FDC_COMMAND);
+    tb_delay(500000u);
+    result->dskchg_drive[6] = in8(FDC_DRIVE);
+    result->dskchg_status[6] = in8(FDC_COMMAND);
     result->dskchg_ran = 1;
     result->ran |= 0x02;
     fdc_restore(3, 0);
@@ -457,7 +495,50 @@ static void step_spin(drive_t* result)
     shell_step("MOTOR AND INDEX, 300 RPM");
     spin(&result->spin[1], 0);
     result->disk = result->spin[0].pulses != 0 || result->spin[1].pulses != 0;
+
+    for (int i = 0; i < SPINUPS; i++)
+    {
+        shell_step("SPIN-UP %u/%u", i + 1, SPINUPS);
+        spin_up(&result->spinups[i]);
+    }
+
     result->ran |= 0x08;
+}
+
+// Motor off for 1.5 s, then on: READY and every index edge for a second, bit 31 set on a rising edge
+static void spin_up(spinup_t* entry)
+{
+    uint32_t start;
+    int index;
+    int ready = 0;
+
+    entry->ready = NEVER;
+    fdc_select(0, 1);
+    fdc_control(FDC_MFM);
+    tb_delay(1500000u);
+    fdc_force();
+    index = (in8(FDC_COMMAND) & FDC_INDEX) != 0;
+    fdc_control((uint8_t)(FDC_MFM | FDC_MOTOR));
+    start = tb_now();
+
+    while (tb_now() - start < SPINUP_US)
+    {
+        uint32_t now = tb_now();
+        int now_index = (in8(FDC_COMMAND) & FDC_INDEX) != 0;
+
+        if (!ready && (in8(FDC_DRIVE) & FDC_READY) != 0)
+        {
+            ready = 1;
+            entry->ready = now - start;
+        }
+
+        if (now_index != index && entry->count < SPINUP_EDGES)
+            entry->edges[entry->count++] = (now - start) | (now_index ? EDGE_HIGH : 0);
+
+        index = now_index;
+    }
+
+    fdc_control(FDC_MFM);
 }
 
 // Seeks to track 10 and Restores at each rate with both FDC clocks; verified seeks and the head load delay in the
@@ -511,10 +592,62 @@ static void step_seeks(drive_t* result)
                 seeks->load_time[load][i] = edge != 0 ? end - edge : 0;
             }
         }
+
+        verified_runs(result);
+        unload_reads(result);
     }
 
     fdc_restore(3, 0);
     result->ran |= 0x10;
+}
+
+// Verified seeks 0>5 and Restores 5>0 with h = 0 and h = 1, each from a head unloaded by an h = 0 seek that doesn't step
+static void verified_runs(drive_t* result)
+{
+    verifies_t* verifies = &result->verifies;
+
+    for (int h = 0; h < 2; h++)
+    {
+        for (int i = 0; i < VERIFY_RUNS; i++)
+        {
+            shell_step("VERIFIED, H=%u, %u/%u", h, i + 1, VERIFY_RUNS);
+            fdc_seek(0, 0, 0x10, 0);
+            verifies->status[h][0] |= fdc_seek(0, 5, (uint8_t)(0x14 | (h << 3)), &verifies->times[h][0][i]);
+            fdc_seek(5, 5, 0x10, 0);
+            out8(FDC_TRACK, 5);
+            verifies->status[h][1] |= fdc_type1((uint8_t)(0x04 | (h << 3)), &verifies->times[h][1][i]);
+        }
+    }
+
+    verifies->ran = 1;
+}
+
+// Read Address with E = 0 from an index edge: after 16 idle turns, then right after an h = 0 seek that doesn't step
+static void unload_reads(drive_t* result)
+{
+    verifies_t* verifies = &result->verifies;
+    uint32_t turn = result->media.period != 0 ? result->media.period : 166667u;
+
+    for (int way = 0; way < 2; way++)
+    {
+        for (int i = 0; i < UNLOAD_READS; i++)
+        {
+            uint8_t id[6];
+            uint32_t end;
+
+            shell_step("HEAD UNLOADED %s, %u/%u", way == 0 ? "IDLE" : "BY SEEK", i + 1, UNLOAD_READS);
+            fdc_seek(0, 0, 0x14, 0);
+
+            if (way == 0)
+                tb_delay(UNLOAD_TURNS * turn);
+            else
+                fdc_seek(0, 0, 0x10, 0);
+
+            uint32_t edge = fdc_index_edge(500000u);
+            verifies->unload_status[way][i] = fdc_read_address(0xC0, id, 1200000u, &end);
+            verifies->unload_time[way][i] = edge != 0 ? end - edge : 0;
+        }
+    }
 }
 
 static void milliseconds(char* text, int size, uint32_t microseconds)
@@ -572,7 +705,7 @@ static int pages(const void* data, uint32_t steps)
 {
     (void)data;
     (void)steps;
-    return 6;
+    return 7;
 }
 
 static void page(const void* data, uint32_t steps, int number)
@@ -618,7 +751,8 @@ static void page(const void* data, uint32_t steps, int number)
     {
         static const char* const k_points[DSKCHG_READS] =
         {
-            "BEFORE THE SWAP", "FIRST READ AFTER", "SECOND READ", "AFTER RESTORE", "AFTER SEEK TO 2", "0.5 S LATER"
+            "BEFORE THE SWAP", "FIRST READ AFTER", "SECOND READ", "AFTER FORCE D0H", "RESTORE, NO STEP", "AFTER SEEK TO 2",
+            "0.5 S LATER"
         };
 
         shell_line(row++, COLOR_CYAN, "DSKCHG: 0208H AND 0200H");
@@ -709,7 +843,98 @@ static void page(const void* data, uint32_t steps, int number)
             shell_line(row++, COLOR_WHITE, " OFF: NOT READY AT %s", off);
         }
 
-        shell_line(row++, COLOR_GRAY, "TIMES FROM THE MOTOR WRITE");
+        for (int i = 0; i < SPINUPS; i++)
+        {
+            const spinup_t* entry = &result->spinups[i];
+            uint32_t rises[4] = { 0, 0, 0, 0 };
+            int found = 0;
+            int before = 0;
+            char ready[12];
+
+            for (int k = 0; k < entry->count; k++)
+            {
+                uint32_t time = entry->edges[k] & ~EDGE_HIGH;
+
+                if (time < entry->ready)
+                    before++;
+
+                if ((entry->edges[k] & EDGE_HIGH) != 0 && found < 4)
+                    rises[found++] = time / 1000;
+            }
+
+            milliseconds(ready, sizeof(ready), entry->ready);
+            shell_line(row++, COLOR_WHITE, "%u RDY %s PRE %u UP %u %u %u %u", i + 1, ready, before, rises[0], rises[1],
+                rises[2], rises[3]);
+        }
+
+        shell_line(row++, COLOR_GRAY, "TIMES FROM THE MOTOR WRITE; PRE: EDGES");
+        shell_line(row++, COLOR_GRAY, "BEFORE READY, UP: INDEX RISES");
+        return;
+    }
+
+    if (number == 6)
+    {
+        const verifies_t* verifies = &result->verifies;
+
+        shell_line(row++, COLOR_CYAN, "VERIFIED, HEAD UNLOADED FIRST, MS");
+
+        if ((result->ran & 0x10) == 0 || !verifies->ran)
+        {
+            shell_line(row++, COLOR_GRAY, (result->ran & 0x10) == 0 ? "NOT RUN" : "NO DISK");
+            return;
+        }
+
+        shell_line(row++, COLOR_GRAY, "H   SEEK 0>5 MIN-MAX  RESTORE MIN-MAX");
+
+        for (int h = 0; h < 2; h++)
+        {
+            char low[2][12];
+            char high[2][12];
+
+            for (int kind = 0; kind < 2; kind++)
+            {
+                uint32_t shortest = NEVER;
+                uint32_t longest = 0;
+
+                for (int i = 0; i < VERIFY_RUNS; i++)
+                {
+                    uint32_t time = verifies->times[h][kind][i];
+                    shortest = time < shortest ? time : shortest;
+                    longest = time > longest ? time : longest;
+                }
+
+                milliseconds(low[kind], sizeof(low[kind]), shortest);
+                milliseconds(high[kind], sizeof(high[kind]), longest);
+            }
+
+            shell_line(row++, COLOR_WHITE, "%u  %6s-%-6s    %6s-%-6s", h, low[0], high[0], low[1], high[1]);
+        }
+
+        shell_line(row++, COLOR_WHITE, "ST H=0 %02X %02X  H=1 %02X %02X", verifies->status[0][0],
+            verifies->status[0][1], verifies->status[1][0], verifies->status[1][1]);
+        row++;
+        shell_line(row++, COLOR_CYAN, "INDEX TO ID, E=0, MS");
+
+        for (int way = 0; way < 2; way++)
+        {
+            char times[UNLOAD_READS][12];
+
+            for (int i = 0; i < UNLOAD_READS; i++)
+                milliseconds(times[i], sizeof(times[i]), verifies->unload_time[way][i]);
+
+            shell_line(row++, COLOR_WHITE, "%-15s %s %s %s", way == 0 ? "16 IDLE TURNS" : "AFTER H=0 SEEK", times[0],
+                times[1], times[2]);
+        }
+
+        shell_line(row++, COLOR_WHITE, "%-15s %u.%u %u.%u %u.%u", "HEAD LOADED", result->seeks.load_time[0][0] / 1000,
+            result->seeks.load_time[0][0] / 100 % 10, result->seeks.load_time[0][1] / 1000,
+            result->seeks.load_time[0][1] / 100 % 10, result->seeks.load_time[0][2] / 1000,
+            result->seeks.load_time[0][2] / 100 % 10);
+        shell_line(row++, COLOR_WHITE, "ST %02X %02X %02X  %02X %02X %02X", verifies->unload_status[0][0],
+            verifies->unload_status[0][1], verifies->unload_status[0][2], verifies->unload_status[1][0],
+            verifies->unload_status[1][1], verifies->unload_status[1][2]);
+        shell_line(row++, COLOR_GRAY, "H=1 LOADS AT THE START, H=0 AT THE");
+        shell_line(row++, COLOR_GRAY, "VERIFY; AN UNLOADED HEAD WAITS FOR HLT");
         return;
     }
 
