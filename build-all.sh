@@ -17,6 +17,7 @@ TESTS=(
     "disc2-video"
     "disc3-sound-cd"
     "disc4-input-storage"
+    "disc5-pass-fail"
 )
 
 # Get the script directory

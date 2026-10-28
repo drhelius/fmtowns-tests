@@ -3,6 +3,7 @@
 # Objects listed in ALLOW_486 may use 486 instructions; they only run on a 486 or behind an #UD handler
 # IMAGE_OPTIONS go to mkimage.py (a larger data track, audio tracks)
 # FLOPPY = yes also builds <name>.img, a 2HD floppy image that boots the same payload
+# SHELL_OBJECTS replaces the menu shell, for a disc that brings its own
 
 CROSS ?= i686-elf-
 CC = $(CROSS)gcc
@@ -23,9 +24,11 @@ CFLAGS = -std=gnu99 -march=i386 -mtune=i386 -Os -ffreestanding -fno-pic -fno-pie
 NASMFLAGS = -f elf32 -I$(SHARED)/
 LDFLAGS = -m elf_i386 -nostdlib --no-warn-rwx-segments -T $(SHARED)/payload.ld
 
+SHELL_OBJECTS ?= $(OBJDIR)/qr.o $(OBJDIR)/shell.o $(OBJDIR)/boot.o
+
 SHARED_OBJECTS = $(OBJDIR)/crt0.o $(OBJDIR)/cpu_entry.o $(OBJDIR)/cpu.o $(OBJDIR)/runtime.o $(OBJDIR)/fmt.o \
     $(OBJDIR)/font.o $(OBJDIR)/screen.o $(OBJDIR)/input.o $(OBJDIR)/timebase.o $(OBJDIR)/pic.o $(OBJDIR)/machine.o \
-    $(OBJDIR)/record.o $(OBJDIR)/baseline.o $(OBJDIR)/qr.o $(OBJDIR)/shell.o $(OBJDIR)/boot.o $(OBJDIR)/cdc.o
+    $(OBJDIR)/record.o $(OBJDIR)/baseline.o $(SHELL_OBJECTS) $(OBJDIR)/cdc.o
 
 CHECK_386 = $(SHARED_OBJECTS) $(filter-out $(ALLOW_486),$(OBJECTS))
 

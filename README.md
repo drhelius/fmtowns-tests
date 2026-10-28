@@ -9,8 +9,9 @@ Hardware tests for the FM Towns family made by analyzing actual hardware.
 
 ## Test Discs
 
-Each disc boots from CD on any FM Towns model into a menu. A test runs on its own and the menu comes back afterwards.
-Every device is put back to the same baseline before and after each test, so no test sees what another one left.
+Each disc boots from CD on any FM Towns model. Discs 1 to 4 boot into a menu: a test runs on its own and the menu
+comes back afterwards. Disc 5 runs a selection of their tests at once and shows each check as PASS or FAIL. Every
+device is put back to the same baseline before and after each test, so no test sees what another one left.
 
 ### The menu
 
@@ -90,6 +91,35 @@ this disc writes the floppy, the CMOS, an IC memory card or a SCSI device.
 - **4.8 – Port timing**: access times of this disc's ports, and of one time base read.
 - **4.9 – IC memory card** (`CARD`): the card status and bank registers, the window and attribute space, and the
   status while the card goes out and back in.
+
+### disc5-pass-fail/
+**Pass/fail checks**
+
+The most telling results of discs 1 to 4 as PASS or FAIL, to compare an emulator with a real machine. The disc runs
+their tests unchanged, with the steps it needs, and checks every result against what a Marty 2 measured. It runs
+everything at boot, in about 3 minutes on the 15 kHz screen the results were taken on, and needs no pad, disk or
+anyone at the machine; then it lists one line per check, page by page. A check marked `(MARTY)` holds values only the
+Marty has (its board timing, its NTSC sync) and shows SKIP on other models, as do the checks for a CPU or a device the
+machine doesn't have.
+
+- **Pad or keyboard**: Left/Right turn pages, Up/Down choose a check, A shows its items with what each one got and
+  wanted, B goes back, Run runs everything again, Select switches between 15 kHz and 31 kHz.
+- **CPU** (1.1, 1.7-1.9): DIV and IDIV results and flags, the undefined flags of 60 instruction variants, page
+  faults while delivering exceptions, writes through CS after setting PE, ESC instructions with no coprocessor, the
+  386SX's CR0.
+- **Board** (1.1, 1.3, 1.4, 1.6): the `0026h` counter, Interval Timer II, `WRPROT` on byte, straddling and DMA
+  writes, `05C0h` and `05C2h`, bus timing and the `006Ch` wait.
+- **Video and sprites** (2.1, 2.3, 2.4, 2.9, 2.10): IRQ11 at the VSYNC rise and held until `05CAh` is written, the
+  NTSC field in every mode, the HSYNC bit, the sync while `START` is 0, the sprite entry time, BUSY at the start of
+  VSYNC, what the CPU costs the sprites, PAGE and sprite register 6.
+- **Sound** (3.3, 3.13): the YM3438 status latch, busy flag and timers, the mixer registers, the PCM block interrupts
+  and rate, IRQ13, the ADC ports and the wave RAM window.
+- **CD-ROM controller** (3.9): the sector DMA and the read forms, DEI, DRY and IRQ9 at the end of a DMA, data ready
+  with DEI pending, undrained sectors and CPU transfers, on LBA-tagged sectors as on disc 3. What the drive itself
+  answers isn't checked.
+- **Floppy, CMOS, IC card and ports** (2.3, 4.4, 4.6, 4.8, 4.9): the FDC request with IRQ6 masked and the PIC poll
+  word, seek and Restore times with no disk in the drive, the backup RAM's bytes, the CMOS window, the empty card
+  slot, and port access times.
 
 ---
 
