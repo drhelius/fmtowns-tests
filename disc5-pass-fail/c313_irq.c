@@ -15,14 +15,27 @@ static const uint8_t k_block_flags[EVENTS] =
 
 static const uint8_t k_irq_pcm[4] = { 0, 0, 1, 0 };
 static const uint8_t k_irq_fm[6] = { 0x01, 0x01, 0x00, 0x00, 0x00, 0x00 };
-static const uint8_t k_wave[4][4] = { { 0x12, 0x34, 0xA5, 0x5A }, { 0x13, 0x35, 0xA4, 0x5B }, { 0x16, 0x00, 0xA1, 0x00 },
-    { 0x17, 0x00, 0xA0, 0x00 } };
+static const uint8_t k_wave[3][4] = { { 0x12, 0x34, 0xA5, 0x5A }, { 0x13, 0x35, 0xA4, 0x5B }, { 0x17, 0x00, 0xA0, 0x00 } };
 
 static int bytes_equal(const uint8_t* a, const uint8_t* b, int count)
 {
     for (int i = 0; i < count; i++)
     {
         if (a[i] != b[i])
+            return 0;
+    }
+
+    return 1;
+}
+
+// The odd bytes keep whatever wave RAM held, which isn't the same from one run to the next
+static int even_bytes_written(const uint8_t* reads, int which)
+{
+    for (int i = 0; i < 4; i++)
+    {
+        int written = reads[i] == (uint8_t)(k_wave_pattern[i] ^ which);
+
+        if (written != ((i & 1) == 0))
             return 0;
     }
 
@@ -115,8 +128,8 @@ static void evaluate_wave(const void* data, uint32_t steps)
 
     if (check_marty())
     {
-        check_true("DWORD WRITE, EVEN BYTES ONLY", bytes_equal(result->wave_cases[4], k_wave[2], 4));
-        check_true("WORD READ, EVEN BYTES ONLY", bytes_equal(result->wave_cases[5], k_wave[3], 4));
+        check_true("DWORD WRITE, EVEN BYTES ONLY", even_bytes_written(result->wave_cases[4], 4));
+        check_true("WORD READ, EVEN BYTES ONLY", bytes_equal(result->wave_cases[5], k_wave[2], 4));
     }
 }
 
