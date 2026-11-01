@@ -27,7 +27,7 @@ void snd_open(snd_saved_t* saved)
     saved->volume_command = in8(0x04E3);
     saved->volume_data = in8(0x04E2);
     out8(0x04D5, SND_GATE_FM | SND_GATE_PCM);
-    out8(0x04EC, (uint8_t)(saved->port_04ec | SND_OUTPUT));
+    out8(0x04EC, (uint8_t)((saved->port_04ec & 0x80) | SND_OUTPUT | SND_OUTPUT_ONES));
 }
 
 void snd_close(const snd_saved_t* saved)

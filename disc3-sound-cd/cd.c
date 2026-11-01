@@ -16,6 +16,8 @@
 #define READ_QUIET 3000000u
 #define COMMAND_FIRST 2000000u
 #define COMMAND_QUIET 100000u
+#define TOC_QUIET 3000000u
+#define TOC_LIMIT 10000000u
 #define STALE_LIMIT 64
 
 extern uint8_t __data_start[];
@@ -428,7 +430,7 @@ int cd_load_toc(cd_log_t* log)
 
     memset(toc, 0, sizeof(*toc));
     cd_send(log, CD_TOC | CD_STATUS, k_zero, 0);
-    cd_collect(log, COMMAND_FIRST, COMMAND_QUIET, COMMAND_FIRST + 1000000u, 0);
+    cd_collect(log, COMMAND_FIRST, TOC_QUIET, TOC_LIMIT, 0);
     toc->packets = log->total;
 
     for (int i = 0; i < log->count; i++)

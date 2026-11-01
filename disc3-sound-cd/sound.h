@@ -10,6 +10,7 @@
 #define SND_GATE_FM 0x02
 #define SND_GATE_PCM 0x01
 #define SND_OUTPUT 0x40
+#define SND_OUTPUT_ONES 0x3F
 #define REC_MAX_STEPS 24
 
 typedef struct

@@ -4,7 +4,8 @@
 // PIT (0044h) in mode 3 with count 256, 1,200 Hz at 307.2 kHz or 75 Hz at 19.2 kHz; SOUND is 0060h bit 2, CFF98h
 // turns it on when read and off when written. Then the level of each source, and what the CD-DA volume, the 04D5h
 // gates and 04ECh bit 6 do to it, the pans, PCM noise for its filter, the FM DAC, a quiet FM tone (a YM2612's
-// ladder distortion shows there, a YM3438 has none) and the CD-DA volume steps
+// ladder distortion shows there, a YM3438 has none) and the CD-DA volume steps. The boot ROM mutes both MB87078s,
+// so the CD-DA channels are set to 0 dB for the whole run, and 04ECh keeps bits 5-0 set as the Data Book asks
 
 #define STEPS 5
 #define COUNT 256
@@ -42,6 +43,7 @@ enum
     SOURCE_CDDA,
     SOURCE_FM_QUIET,
     SOURCE_FM_LEFT,
+    SOURCE_FM_RIGHT,
     SOURCE_PCM_0F,
     SOURCE_PCM_F0,
     SOURCE_PCM_NOISE,
@@ -55,7 +57,8 @@ typedef struct
     uint8_t volume_command;
     uint8_t volume_data;
     uint8_t cff98_mapped;
-    uint8_t reserved[3];
+    uint8_t play_status[2];
+    uint8_t play_errors;
     uint32_t change_time;
     uint32_t starts[STEPS][REC_MAX_STEPS];
 } buzzer_t;
@@ -104,6 +107,7 @@ static const rec_step_t k_levels[] =
     { "CD-DA 1 KHZ -6 DB", 3000, 500, A_SOURCE, SOURCE_CDDA },
     { "FM 1 KHZ TL 60", 2000, 500, A_SOURCE, SOURCE_FM_QUIET },
     { "FM PAN 80H", 2000, 500, A_SOURCE, SOURCE_FM_LEFT },
+    { "FM PAN 40H", 2000, 500, A_SOURCE, SOURCE_FM_RIGHT },
     { "PCM SQUARE PAN 0FH", 2000, 500, A_SOURCE, SOURCE_PCM_0F },
     { "PCM SQUARE PAN F0H", 2000, 500, A_SOURCE, SOURCE_PCM_F0 },
     { "PCM WHITE NOISE", 3000, 500, A_SOURCE, SOURCE_PCM_NOISE },
@@ -161,7 +165,7 @@ static snd_saved_t s_saved;
 
 const test_t g_test_buzzer =
 {
-    "3.1", "BUZZER AND LEVELS", "REC", 0, 1, sizeof(buzzer_t), k_steps, run, pages, page, summary
+    "3.1", "BUZZER AND LEVELS", "REC", 0, 2, sizeof(buzzer_t), k_steps, run, pages, page, summary
 };
 
 static void run(void* data, uint32_t steps)
@@ -178,6 +182,9 @@ static void run(void* data, uint32_t steps)
     result->volume_command = s_saved.volume_command;
     result->volume_data = s_saved.volume_data;
     result->cff98_mapped = (uint8_t)((g_boot.port_0404 & 0x80) == 0);
+    result->play_status[0] = 0xFF;
+    result->play_status[1] = 0xFF;
+    snd_cdda_volume(0x3F);
 
     snd_pcm_square(0, PCM_HALF, 0xFE, 0x7F);
     noise();
@@ -246,7 +253,7 @@ static void action(int id, int argument, int on)
             source(argument, on);
             break;
         case A_VOLUME:
-            snd_cdda_volume(on ? 0x00 : s_saved.volume_data);
+            snd_cdda_volume(on ? 0x00 : 0x3F);
             source(argument, on);
             break;
         case A_GATE_FM:
@@ -258,14 +265,14 @@ static void action(int id, int argument, int on)
             source(argument, on);
             break;
         case A_OUTPUT:
-            out8(0x04EC, on ? (uint8_t)(s_saved.port_04ec & ~SND_OUTPUT) : (uint8_t)(s_saved.port_04ec | SND_OUTPUT));
+            out8(0x04EC, (uint8_t)((s_saved.port_04ec & 0x80) | SND_OUTPUT_ONES | (on ? 0 : SND_OUTPUT)));
             source(argument, on);
             break;
         case A_CD_VOLUME:
             for (uint8_t channel = 0; channel < 2; channel++)
             {
                 out8(0x04E3, (uint8_t)(channel | (on ? k_volumes[argument][0] : 0x04)));
-                out8(0x04E2, on ? k_volumes[argument][1] : s_saved.volume_data);
+                out8(0x04E2, on ? k_volumes[argument][1] : 0x3F);
             }
 
             source(SOURCE_CDDA, on);
@@ -299,7 +306,18 @@ static void source(int which, int on)
             break;
         case SOURCE_CDDA:
             if (on)
+            {
                 cd_play(&log, cd_track(2), cd_track(2) + 750, 0);
+
+                if (s_result->play_status[0] == 0xFF && log.count != 0)
+                {
+                    s_result->play_status[0] = log.packets[0].bytes[0];
+                    s_result->play_status[1] = log.packets[0].bytes[1];
+                }
+
+                if (log.count == 0 || (log.flags & CD_LOG_ERROR) != 0)
+                    s_result->play_errors++;
+            }
             else
                 cd_stop(&log);
             break;
@@ -309,6 +327,10 @@ static void source(int which, int on)
             break;
         case SOURCE_FM_LEFT:
             snd_ym(0, 0xB5, on ? 0x80 : 0xC0);
+            snd_fm_key(1, on);
+            break;
+        case SOURCE_FM_RIGHT:
+            snd_ym(0, 0xB5, on ? 0x40 : 0xC0);
             snd_fm_key(1, on);
             break;
         case SOURCE_PCM_0F:
@@ -390,6 +412,8 @@ static void page(const void* data, uint32_t steps, int number)
         shell_line(row++, COLOR_WHITE, "04D5H %02X  04ECH %02X", result->port_04d5, result->port_04ec);
         shell_line(row++, COLOR_WHITE, "04E3H %02X  04E2H %02X", result->volume_command, result->volume_data);
         shell_line(row++, COLOR_WHITE, "CFF98H %s", result->cff98_mapped ? "MAPPED" : "NOT MAPPED (0404H BIT 7)");
+        shell_line(row++, COLOR_WHITE, "CD PLAY %02X %02X  ERRORS %u", result->play_status[0], result->play_status[1],
+            result->play_errors);
         row++;
         shell_line(row++, COLOR_CYAN, "THE RECORDING ANSWERS");
         shell_line(row++, COLOR_WHITE, "1200 HZ = PIT AT 307.2 KHZ");
