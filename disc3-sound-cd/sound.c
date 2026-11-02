@@ -16,6 +16,7 @@
 #define LIST_TOP (SHELL_BODY_TOP + 2)
 
 static int s_started;
+static void (*s_start_hook)(void);
 static uint32_t s_origin;
 
 static void wait_ms(uint32_t start, uint32_t milliseconds, int row);
@@ -174,14 +175,10 @@ int snd_buzzer_cff98(int on)
     return 1;
 }
 
-// Both CD-DA channels of the second MB87078, enabled at 0 dB steps of data
-void snd_cdda_volume(uint8_t data)
+// Runs once, after A starts the first schedule of a run and before its sync burst
+void rec_start_hook(void (*hook)(void))
 {
-    for (uint8_t channel = 0; channel < 2; channel++)
-    {
-        out8(0x04E3, (uint8_t)(0x04 | channel));
-        out8(0x04E2, data);
-    }
+    s_start_hook = hook;
 }
 
 // The first schedule of a run waits for A (B skips it); later ones in the same run start after a second
@@ -220,6 +217,14 @@ int rec_play(const char* title, const rec_step_t* steps, int count, rec_action_t
         }
 
         s_started = 1;
+
+        if (s_start_hook != 0)
+        {
+            scr_clear_rows(prompt, prompt);
+            shell_line(prompt, COLOR_YELLOW, "PREPARING");
+            scr_present();
+            s_start_hook();
+        }
     }
     else
         tb_delay(1000000u);

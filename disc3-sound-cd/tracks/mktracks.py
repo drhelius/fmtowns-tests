@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Writes disc 3's audio tracks as raw CD-DA (16-bit little-endian stereo at 44.1 kHz) and the track list that
 mkimage.py --audio reads. Track 2 follows the data track, so its 2 s pregap is left to the burner; track 4 keeps
-its 2 s INDEX 00 in the file; track 5 carries the pre-emphasis flag; track 7's right channel is 6 dB lower. cd.c expects this layout before it has the TOC.
+its 2 s INDEX 00 in the file; track 5 carries the pre-emphasis flag; track 7's right channel is 6 dB lower; track 8
+holds 4 minutes of the 1 kHz tone so 3.1 can play it once for all its CD-DA steps. cd.c expects this layout before it
+has the TOC.
 """
 
 import array
@@ -110,6 +112,7 @@ def main():
         ("track05.raw", 0, 0, "PRE", pink(5) + sweep(20, 20000, 10)),
         ("track06.raw", 0, 0, "", pink(5) + sweep(20, 20000, 10)),
         ("track07.raw", 0, 0, "", stepped_tone(300, 25, 60), 0.5),
+        ("track08.raw", 0, 0, "", tone(1000, 240)),
     ]
 
     with open(os.path.join(out, "tracks.txt"), "w") as f:

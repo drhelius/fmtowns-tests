@@ -4,8 +4,9 @@
 // PIT (0044h) in mode 3 with count 256, 1,200 Hz at 307.2 kHz or 75 Hz at 19.2 kHz; SOUND is 0060h bit 2, CFF98h
 // turns it on when read and off when written. Then the level of each source, and what the CD-DA volume, the 04D5h
 // gates and 04ECh bit 6 do to it, the pans, PCM noise for its filter, the FM DAC, a quiet FM tone (a YM2612's
-// ladder distortion shows there, a YM3438 has none) and the CD-DA volume steps. The boot ROM mutes both MB87078s,
-// so the CD-DA channels are set to 0 dB for the whole run, and 04ECh keeps bits 5-0 set as the Data Book asks
+// ladder distortion shows there, a YM3438 has none) and the CD-DA volume steps. 04ECh keeps bits 5-0 set as the Data
+// Book asks. The drive takes seconds to start a play, so track 8's tone plays once for the whole run with the CD-DA
+// channels muted, and each CD-DA step only sets their volume
 
 #define STEPS 5
 #define COUNT 256
@@ -17,6 +18,13 @@
 #define NOISE_SIZE 0x5000u
 #define DAC_HALF_US 500u
 #define DAC_US 2000000u
+#define CD_TONE_TRACK 8
+#define CD_ATTEMPTS 3
+#define CD_LEAD_US 3000000u
+#define CD_SCHEDULES 0x1Cu
+#define CD_EN 0x04
+#define CD_MUTE 0x00
+#define CD_0DB 0x3F
 
 enum
 {
@@ -70,6 +78,8 @@ static void summary(const void* data, uint32_t steps, char* line, uint8_t* color
 static void action(int id, int argument, int on);
 static void source(int which, int on);
 static void noise(void);
+static void start_cd(void);
+static void cd_channels(uint8_t control, uint8_t data);
 static void fm_dac(void);
 
 static const test_step_t k_steps[] =
@@ -161,11 +171,12 @@ static const int k_counts[STEPS] =
 };
 
 static buzzer_t* s_result;
+static uint8_t s_cd_data;
 static snd_saved_t s_saved;
 
 const test_t g_test_buzzer =
 {
-    "3.1", "BUZZER AND LEVELS", "REC", 0, 2, sizeof(buzzer_t), k_steps, run, pages, page, summary
+    "3.1", "BUZZER AND LEVELS", "REC", 0, 3, sizeof(buzzer_t), k_steps, run, pages, page, summary
 };
 
 static void run(void* data, uint32_t steps)
@@ -184,7 +195,11 @@ static void run(void* data, uint32_t steps)
     result->cff98_mapped = (uint8_t)((g_boot.port_0404 & 0x80) == 0);
     result->play_status[0] = 0xFF;
     result->play_status[1] = 0xFF;
-    snd_cdda_volume(0x3F);
+    s_cd_data = CD_0DB;
+    cd_channels(CD_MUTE, CD_0DB);
+
+    if ((steps & CD_SCHEDULES) != 0)
+        rec_start_hook(start_cd);
 
     snd_pcm_square(0, PCM_HALF, 0xFE, 0x7F);
     noise();
@@ -253,7 +268,11 @@ static void action(int id, int argument, int on)
             source(argument, on);
             break;
         case A_VOLUME:
-            snd_cdda_volume(on ? 0x00 : 0x3F);
+            s_cd_data = on ? 0x00 : CD_0DB;
+
+            if (argument != SOURCE_CDDA)
+                cd_channels(CD_MUTE, s_cd_data);
+
             source(argument, on);
             break;
         case A_GATE_FM:
@@ -269,13 +288,7 @@ static void action(int id, int argument, int on)
             source(argument, on);
             break;
         case A_CD_VOLUME:
-            for (uint8_t channel = 0; channel < 2; channel++)
-            {
-                out8(0x04E3, (uint8_t)(channel | (on ? k_volumes[argument][0] : 0x04)));
-                out8(0x04E2, on ? k_volumes[argument][1] : 0x3F);
-            }
-
-            source(SOURCE_CDDA, on);
+            cd_channels(on ? k_volumes[argument][0] : CD_MUTE, on ? k_volumes[argument][1] : CD_0DB);
             break;
         default:
             break;
@@ -284,8 +297,6 @@ static void action(int id, int argument, int on)
 
 static void source(int which, int on)
 {
-    cd_log_t log;
-
     switch (which)
     {
         case SOURCE_BUZZER:
@@ -305,21 +316,7 @@ static void source(int which, int on)
                 snd_pcm_on(0x00);
             break;
         case SOURCE_CDDA:
-            if (on)
-            {
-                cd_play(&log, cd_track(2), cd_track(2) + 750, 0);
-
-                if (s_result->play_status[0] == 0xFF && log.count != 0)
-                {
-                    s_result->play_status[0] = log.packets[0].bytes[0];
-                    s_result->play_status[1] = log.packets[0].bytes[1];
-                }
-
-                if (log.count == 0 || (log.flags & CD_LOG_ERROR) != 0)
-                    s_result->play_errors++;
-            }
-            else
-                cd_stop(&log);
+            cd_channels(on ? CD_EN : CD_MUTE, on ? s_cd_data : CD_0DB);
             break;
         case SOURCE_FM_QUIET:
             snd_ym(0, 0x4D, on ? 0x3C : 0x00);
@@ -348,6 +345,40 @@ static void source(int which, int on)
             break;
         default:
             break;
+    }
+}
+
+// The tone starts muted and the drive gets a few seconds to reach it, so no step waits for the play
+static void start_cd(void)
+{
+    cd_log_t log;
+
+    for (int attempt = 0; attempt < CD_ATTEMPTS; attempt++)
+    {
+        cd_play(&log, cd_track(CD_TONE_TRACK), cd_track_end(CD_TONE_TRACK) + 1, 0);
+
+        if (s_result->play_status[0] == 0xFF && log.count != 0)
+        {
+            s_result->play_status[0] = log.packets[0].bytes[0];
+            s_result->play_status[1] = log.packets[0].bytes[1];
+        }
+
+        if (log.count != 0 && (log.flags & CD_LOG_ERROR) == 0)
+            break;
+
+        s_result->play_errors++;
+    }
+
+    tb_delay(CD_LEAD_US);
+}
+
+// Both CD-DA channels of the second MB87078
+static void cd_channels(uint8_t control, uint8_t data)
+{
+    for (uint8_t channel = 0; channel < 2; channel++)
+    {
+        out8(0x04E3, (uint8_t)(channel | control));
+        out8(0x04E2, data);
     }
 }
 

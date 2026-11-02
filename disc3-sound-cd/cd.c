@@ -35,9 +35,9 @@ static uint32_t s_first_time SHELL_STATE;
 
 // The layout mkimage.py and tracks/mktracks.py build, for when the TOC can't be read; track 4's INDEX 00 is 150
 // sectors before its start
-static const uint32_t k_starts[CD_TRACKS + 1] = { 0, 0, 40150, 41650, 43900, 44650, 45775, 46900 };
-static const uint8_t k_controls[CD_TRACKS + 1] = { 0, 4, 0, 0, 0, 1, 0, 0 };
-static const uint32_t k_leadout = 51400;
+static const uint32_t k_starts[CD_TRACKS + 1] = { 0, 0, 40150, 41650, 43900, 44650, 45775, 46900, 51400 };
+static const uint8_t k_controls[CD_TRACKS + 1] = { 0, 4, 0, 0, 0, 1, 0, 0, 0 };
+static const uint32_t k_leadout = 69400;
 
 static void add_packet(cd_log_t* log, uint32_t time, const uint8_t* bytes);
 static void run_dma(cd_log_t* log, uint32_t index);
@@ -460,7 +460,7 @@ int cd_load_toc(cd_log_t* log)
         }
     }
 
-    toc->valid = found == 0xFE && toc->leadout != 0;
+    toc->valid = found == ((1u << (CD_TRACKS + 1)) - 2) && toc->leadout != 0;
 
     if (!toc->valid)
     {

@@ -40,7 +40,7 @@
 #define CD_PAUSE 0x85
 #define CD_RESUME 0x87
 
-#define CD_TRACKS 7
+#define CD_TRACKS 8
 #define CD_DATA_SECTORS 40000u
 #define CD_PAD_LBA 1000u
 #define CD_TAG_MAGIC 0x33544D46u
@@ -48,7 +48,7 @@
 #define CD_BUFFER 0x00100000u
 #define CD_NO_LBA 0x00FFFFFFu
 
-#define CD_LOG_PACKETS 24
+#define CD_LOG_PACKETS 32
 #define CD_PACKET_DMA_NONE 0xDD
 #define CD_PACKET_DMA 0xDE
 #define CD_PACKET_DMA_TIMEOUT 0xDF

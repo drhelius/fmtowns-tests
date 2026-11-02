@@ -46,7 +46,7 @@ void snd_pcm_square(uint32_t offset, uint32_t half, uint8_t high, uint8_t low);
 void snd_buzzer_pit(int mode, uint16_t count);
 void snd_buzzer_sound(int on);
 int snd_buzzer_cff98(int on);
-void snd_cdda_volume(uint8_t data);
+void rec_start_hook(void (*hook)(void));
 int rec_play(const char* title, const rec_step_t* steps, int count, rec_action_t action, uint32_t* starts);
 int rec_draw(int row, const char* title, const rec_step_t* steps, int count, const uint32_t* starts);
 
