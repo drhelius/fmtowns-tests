@@ -18,6 +18,8 @@
 #define COMMAND_QUIET 100000u
 #define TOC_QUIET 3000000u
 #define TOC_LIMIT 10000000u
+#define DRAIN_QUIET 300000u
+#define DRAIN_LIMIT 3000000u
 #define STALE_LIMIT 64
 
 extern uint8_t __data_start[];
@@ -500,7 +502,8 @@ void cd_reset(void)
     out8(CD_MASTER, (uint8_t)(CD_CONTROL_SRST | s_masks));
 }
 
-// CD-DA stopped, the queue drained, DMA masked and both requests acknowledged, as the next test expects the CDC
+// CD-DA stopped, the queue drained until 300 ms pass with no packet, DMA masked and both requests acknowledged, as
+// the next test expects the CDC. A seek that retried can still answer after the stop's own packets
 void cd_quiet(void)
 {
     static const uint8_t k_zero[8];
@@ -516,10 +519,18 @@ void cd_quiet(void)
     while ((cd_master() & CD_MASTER_DRY) == 0 && tb_now() - start < READY_TIMEOUT)
         ;
 
-    for (int i = 0; i < STALE_LIMIT && (cd_master() & CD_MASTER_SRQ) != 0; i++)
+    uint32_t last = tb_now();
+    start = last;
+
+    while (tb_now() - last < DRAIN_QUIET && tb_now() - start < DRAIN_LIMIT)
     {
+        if ((cd_master() & CD_MASTER_SRQ) == 0)
+            continue;
+
         for (int k = 0; k < 4; k++)
             (void)in8(CD_COMMAND);
+
+        last = tb_now();
     }
 
     out8(CD_MASTER, CD_CONTROL_SIRQ | CD_CONTROL_DEI);

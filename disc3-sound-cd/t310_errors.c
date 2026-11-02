@@ -406,8 +406,9 @@ static void step_unknown(errors_t* result)
     }
 }
 
-// 04C0h and IRQ9 right after the reset and 1 ms later, then every packet in 500 ms; both masks set. The reset during
-// a DMA is a step of its own: it locked the Marty 2
+// 04C0h and IRQ9 right after the reset and 1 ms later, then every packet in 500 ms; both masks set. Between sectors,
+// a sector announced after the reset is transferred and the LBA it carries kept. The reset during a DMA is a step of
+// its own: it locked the Marty 2
 static void step_srst(errors_t* result, int dma)
 {
     for (int i = 0; i < SRST_CASES; i++)
@@ -447,6 +448,10 @@ static void step_srst(errors_t* result, int dma)
         }
 
         cd_begin(&log, 0xFF);
+
+        if (i == 1)
+            log.lba = CD_PAD_LBA + 21;
+
         cd_reset();
         entry->master[0] = cd_master();
         entry->irq[0] = cd_irq_line();
@@ -454,7 +459,12 @@ static void step_srst(errors_t* result, int dma)
         entry->master[1] = cd_master();
         entry->irq[1] = cd_irq_line();
         out8(CD_MASTER, CD_CONTROL_SMIM | CD_CONTROL_DEIM);
-        cd_poll(&log, 500000u);
+
+        if (i == 1)
+            cd_collect(&log, 500000u, 500000u, 500000u, CD_DMA);
+        else
+            cd_poll(&log, 500000u);
+
         cd_keep(&entry->log, &log);
         out8(0x00AF, 0x0F);
         cd_masks(0);

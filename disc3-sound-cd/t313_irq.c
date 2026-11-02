@@ -5,7 +5,8 @@
 // and how the FM timer flags and the PCM causes reach 04E9h and IRQ13. Expected: 4 KiB blocks, 8 KiB per mask bit,
 // 04EBh cleared by reading, IRQ13 = (FM flags) or (PCM causes), PCM at 8 MHz / 384. Also the ADC ports read 256 times,
 // and wave RAM written and read through its window by byte, word and dword with the PCM stopped and running, every
-// channel off; the rate step fills wave RAM by byte with the PCM stopped
+// channel off, then byte reads and writes at set delays after the run bit goes on and off; the rate step fills wave
+// RAM by byte with the PCM stopped
 
 #define FOUND_PORTS 20
 #define EVENTS 16
@@ -18,6 +19,9 @@
 #define WAVE_CASES 6
 #define WAVE_OFFSET 0x0200u
 #define PCM_RUN 0x80
+#define RUN_SERIES 3
+#define RUN_DELAYS 10
+#define RUN_OFFSET 0x0300u
 
 typedef struct
 {
@@ -32,6 +36,8 @@ typedef struct
     uint16_t ready_count;
     uint8_t adc_kept[ADC_KEPT];
     uint8_t wave_cases[WAVE_CASES][4];
+    uint8_t run_reads[RUN_SERIES][RUN_DELAYS];
+    uint8_t reserved_run[2];
     uint8_t unmasked_flags;
     uint8_t event_count;
     uint8_t timeouts;
@@ -53,6 +59,8 @@ static void step_fm(irq_t* result);
 static void step_adc(irq_t* result);
 static void step_wave(irq_t* result);
 static void wave_case(int which, uint8_t* reads);
+static void step_run_bit(irq_t* result);
+static uint8_t run_bit_case(int series, int index);
 static uint8_t irq13(void);
 static uint32_t rate(const irq_t* result);
 
@@ -63,6 +71,7 @@ static const test_step_t k_steps[] =
     { "FM TIMER ON IRQ13", 0 },
     { "ADC PORTS", 0 },
     { "WAVE RAM ACCESS", 0 },
+    { "WAVE RAM AROUND RUN BIT", 0 },
     { 0, 0 }
 };
 
@@ -73,6 +82,8 @@ static const char* const k_wave_names[WAVE_CASES] =
     "B OFF > B OFF", "B ON  > B OFF", "B OFF > B ON", "W OFF > B OFF", "D OFF > B OFF", "B OFF > W OFF"
 };
 
+static const uint16_t k_run_delays[RUN_DELAYS] = { 0, 2, 5, 10, 20, 50, 100, 200, 500, 1000 };
+
 static const uint16_t k_ports[FOUND_PORTS] =
 {
     0x04D5, 0x04E0, 0x04E1, 0x04E2, 0x04E3, 0x04E7, 0x04E8, 0x04E9, 0x04EA, 0x04EB, 0x04EC,
@@ -81,7 +92,7 @@ static const uint16_t k_ports[FOUND_PORTS] =
 
 const test_t g_test_irq =
 {
-    "3.13", "SOUND REGS AND IRQ13", 0, TEST_RUN_ALL, 2, sizeof(irq_t), k_steps, run, pages, page, summary
+    "3.13", "SOUND REGS AND IRQ13", 0, TEST_RUN_ALL, 3, sizeof(irq_t), k_steps, run, pages, page, summary
 };
 
 static void run(void* data, uint32_t steps)
@@ -93,6 +104,9 @@ static void run(void* data, uint32_t steps)
 
     if ((steps & 0x10) != 0)
         step_wave(result);
+
+    if ((steps & 0x20) != 0)
+        step_run_bit(result);
 
     if ((steps & 0x08) != 0)
         step_adc(result);
@@ -228,6 +242,56 @@ static void wave_case(int which, uint8_t* reads)
     out8(0x04F7, 0x00);
 }
 
+static void step_run_bit(irq_t* result)
+{
+    shell_step("WAVE RAM AROUND RUN BIT");
+
+    for (int series = 0; series < RUN_SERIES; series++)
+    {
+        for (int d = 0; d < RUN_DELAYS; d++)
+            result->run_reads[series][d] = run_bit_case(series, d);
+    }
+
+    out8(0x04F7, 0x00);
+
+    for (uint32_t i = 0; i < RUN_SERIES * 0x10u; i++)
+        MMIO8(g_machine.pcm_window + RUN_OFFSET + i) = SILENT;
+}
+
+// A byte of its own written with the PCM stopped (4Xh, 5Xh, 6Xh by series, X the delay's index): read that long after
+// the run bit goes on (ON); read that long after it goes off, 1 ms later (OFF); 00h written stopped, then the byte
+// written that long after the run bit goes off, read 2 ms later (WRITE)
+static uint8_t run_bit_case(int series, int index)
+{
+    uint32_t address = g_machine.pcm_window + RUN_OFFSET + (uint32_t)series * 0x10u + (uint32_t)index;
+    uint8_t value = (uint8_t)(0x40 + series * 0x10 + index);
+    uint8_t read;
+
+    out8(0x04F8, 0xFF);
+    out8(0x04F7, 0x00);
+    MMIO8(address) = series == 2 ? 0x00 : value;
+    out8(0x04F7, PCM_RUN);
+
+    if (series == 0)
+    {
+        tb_delay(k_run_delays[index]);
+        read = MMIO8(address);
+        out8(0x04F7, 0x00);
+        return read;
+    }
+
+    tb_delay(1000);
+    out8(0x04F7, 0x00);
+    tb_delay(k_run_delays[index]);
+
+    if (series == 1)
+        return MMIO8(address);
+
+    MMIO8(address) = value;
+    tb_delay(2000);
+    return MMIO8(address);
+}
+
 // Channel 0 at envelope 0 stepping 1.0 through silent wave RAM with no loop marker, every mask bit set
 static void step_rate(irq_t* result)
 {
@@ -329,7 +393,7 @@ static int pages(const void* data, uint32_t steps)
 {
     (void)data;
     (void)steps;
-    return 3;
+    return 4;
 }
 
 static void page(const void* data, uint32_t steps, int number)
@@ -352,6 +416,44 @@ static void page(const void* data, uint32_t steps, int number)
         shell_line(row++, COLOR_WHITE, "04EAH A5>%02X 00>%02X", result->mask_reads[0], result->mask_reads[1]);
         shell_line(row++, COLOR_WHITE, "04E3H 07, 04E2H 15: %02X %02X", result->volume_reads[0],
             result->volume_reads[1]);
+        return;
+    }
+
+    if (number == 3)
+    {
+        shell_line(row++, COLOR_CYAN, "WAVE RAM AROUND THE RUN BIT");
+
+        if ((steps & 0x20) == 0)
+        {
+            shell_line(row++, COLOR_GRAY, "NOT RUN");
+            return;
+        }
+
+        shell_line(row++, COLOR_GRAY, "DELAY US  ON     OFF    WRITE");
+
+        for (int d = 0; d < RUN_DELAYS; d++)
+        {
+            char text[RUN_SERIES][8];
+            int same = 1;
+
+            for (int k = 0; k < RUN_SERIES; k++)
+            {
+                uint8_t value = result->run_reads[k][d];
+                uint8_t written = (uint8_t)(0x40 + k * 0x10 + d);
+                same &= value == written;
+                fmt_format(text[k], sizeof(text[k]), "%02X %s", value, value == written ? "OK" : value == 0xFF ? "FF" :
+                    "--");
+            }
+
+            shell_line(row++, same ? COLOR_WHITE : COLOR_YELLOW, "%-9u %-6s %-6s %s", k_run_delays[d], text[0], text[1],
+                text[2]);
+        }
+
+        row++;
+        shell_line(row++, COLOR_GRAY, "ON: READ AFTER THE RUN BIT GOES ON");
+        shell_line(row++, COLOR_GRAY, "OFF: READ AFTER IT GOES OFF");
+        shell_line(row++, COLOR_GRAY, "WRITE: WRITTEN AFTER IT GOES OFF");
+        shell_line(row++, COLOR_GRAY, "OK: WHAT WAS WRITTEN (4X 5X 6X)");
         return;
     }
 

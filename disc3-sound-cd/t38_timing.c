@@ -2,8 +2,9 @@
 
 // 3.8 CD read timing (docs/12, HT-48): times from the command write to data ready (22h), to read done (06h) and to
 // DMA end, the DMA started at each 22h. The sector period of long reads (13.3 ms at 1x), how deep the read-ahead is
-// and how fast it fills, seek times by distance in both directions as reads and as 00h seeks, and how fast each
-// read form is accepted from idle, from a spinning drive and during CD-DA. Each point keeps the minimum and maximum
+// and how fast it fills, seek times by distance in both directions as reads and as 00h seeks, how fast each read
+// form is accepted from idle, from a spinning drive and during CD-DA, and whether a sector just read, or one before
+// it, comes back from the buffer when read again. Each point keeps the minimum and maximum
 
 #define SPEED_RUNS 2
 #define SPEED_SIZES 2
@@ -11,6 +12,8 @@
 #define SINK 260
 #define WAITS 7
 #define DEPTHS 8
+#define REREADS 4
+#define REREAD_WAITS 2
 #define REPEATS 8
 #define RAW_REPEATS 4
 #define DISTANCES 12
@@ -53,6 +56,7 @@ typedef struct
     span_t reads[DISTANCES][2];
     span_t seeks[DISTANCES][2];
     span_t accept[STATES][FORMS];
+    span_t rereads[2][REREADS * REREAD_WAITS];
 } timing_t;
 
 static void run(void* data, uint32_t steps);
@@ -63,6 +67,7 @@ static void step_speed(timing_t* result);
 static void step_ahead(timing_t* result);
 static void step_seeks(timing_t* result);
 static void step_accept(timing_t* result);
+static void step_reread(timing_t* result);
 static uint32_t timed_read(uint8_t command, uint32_t lba);
 static uint32_t timed_seek(uint32_t lba);
 static void span_add(span_t* span, uint32_t time);
@@ -70,6 +75,7 @@ static int draw_span(int row, const char* label, const span_t* span);
 static uint32_t distance(int index);
 static uint32_t mean_interval(const speed_t* speed);
 static int depth(const span_t* spans);
+static int hits(const span_t* spans);
 
 static const test_step_t k_steps[] =
 {
@@ -77,6 +83,7 @@ static const test_step_t k_steps[] =
     { "READ-AHEAD", 0 },
     { "SEEKS", 0 },
     { "COMMAND ACCEPTANCE", 0 },
+    { "RE-READ", 0 },
     { 0, 0 }
 };
 
@@ -87,12 +94,14 @@ static const uint32_t k_distances[DISTANCES - 1] = { 1, 2, 4, 10, 30, 100, 300, 
 static const uint8_t k_forms[FORMS] = { CD_READ, CD_RAW_READ, CD_SEEK };
 static const char* const k_form_names[FORMS] = { "02H", "03H", "00H" };
 static const char* const k_state_names[STATES] = { "IDLE", "SPIN", "CD-DA" };
+static const char* const k_reread_names[REREADS] = { "SAME", "PREV", "3:MID", "3:1ST" };
+static const uint16_t k_reread_waits[REREAD_WAITS] = { 0, 200 };
 
 static uint32_t s_sink[SINK];
 
 const test_t g_test_timing =
 {
-    "3.8", "CD READ TIMING", 0, TEST_RUN_ALL, 1, sizeof(timing_t), k_steps, run, pages, page, summary
+    "3.8", "CD READ TIMING", 0, TEST_RUN_ALL, 2, sizeof(timing_t), k_steps, run, pages, page, summary
 };
 
 static void run(void* data, uint32_t steps)
@@ -108,6 +117,9 @@ static void run(void* data, uint32_t steps)
 
     if ((steps & 0x02) != 0)
         step_ahead(result);
+
+    if ((steps & 0x10) != 0)
+        step_reread(result);
 
     if ((steps & 0x04) != 0)
         step_seeks(result);
@@ -188,6 +200,40 @@ static void step_ahead(timing_t* result)
                 timed_read(command, AHEAD_LBA);
                 tb_delay(200000u);
                 span_add(&result->depths[form][k], timed_read(command, AHEAD_LBA + 1 + (uint32_t)k));
+            }
+        }
+    }
+}
+
+// A one-sector read of L, then L again (SAME) or L - 1 (PREV); a three-sector read of L - 2 to L, then L - 1 (3:MID)
+// or L - 2 (3:1ST); each with 0 and 200 ms between
+static void step_reread(timing_t* result)
+{
+    for (int form = 0; form < 2; form++)
+    {
+        uint8_t command = (uint8_t)((form == 0 ? CD_READ : CD_RAW_READ) | CD_STATUS);
+        int repeats = form == 0 ? REPEATS : RAW_REPEATS;
+
+        for (int c = 0; c < REREADS; c++)
+        {
+            for (int w = 0; w < REREAD_WAITS; w++)
+            {
+                for (int i = 0; i < repeats; i++)
+                {
+                    cd_log_t log;
+
+                    shell_step("%s %s %u MS %u/%u", form == 0 ? "READ" : "RAW", k_reread_names[c], k_reread_waits[w],
+                        i + 1, repeats);
+
+                    if (c < 2)
+                        timed_read(command, AHEAD_LBA);
+                    else
+                        cd_read(&log, command, AHEAD_LBA - 2, 3);
+
+                    tb_delay((uint32_t)k_reread_waits[w] * 1000u);
+                    span_add(&result->rereads[form][c * REREAD_WAITS + w],
+                        timed_read(command, AHEAD_LBA - (c == 0 ? 0 : c == 3 ? 2 : 1)));
+                }
             }
         }
     }
@@ -318,6 +364,20 @@ static int depth(const span_t* spans)
     return count;
 }
 
+// The re-reads that came fast
+static int hits(const span_t* spans)
+{
+    int count = 0;
+
+    for (int i = 0; i < REREADS * REREAD_WAITS; i++)
+    {
+        if (spans[i].runs != 0 && spans[i].low != NO_TIME && spans[i].low < FAST_US)
+            count++;
+    }
+
+    return count;
+}
+
 // Minimum-maximum in ms with one decimal, and the failed runs
 static int draw_span(int row, const char* label, const span_t* span)
 {
@@ -344,7 +404,7 @@ static int pages(const void* data, uint32_t steps)
 {
     (void)data;
     (void)steps;
-    return 6;
+    return 7;
 }
 
 static void page(const void* data, uint32_t steps, int number)
@@ -412,7 +472,7 @@ static void page(const void* data, uint32_t steps, int number)
             row = draw_span(row, label, &result->depths[form][k]);
         }
 
-        shell_line(row++, COLOR_GREEN, "DEPTH %u SECTORS (8 KB: %u)", depth(result->depths[form]), form == 0 ? 4 : 3);
+        shell_line(row++, COLOR_GREEN, "DEPTH %u SECTORS (8 KB: 3)", depth(result->depths[form]));
         return;
     }
 
@@ -445,6 +505,33 @@ static void page(const void* data, uint32_t steps, int number)
         return;
     }
 
+    if (number == 6)
+    {
+        shell_line(row++, COLOR_GRAY, "CASE WAIT 22H MIN-MAX MS   FAILED");
+
+        for (int form = 0; form < 2; form++)
+        {
+            if (form != 0)
+                row++;
+
+            shell_line(row++, COLOR_CYAN, "%s: READ, WAIT, READ AGAIN", form == 0 ? "02H" : "03H RAW");
+
+            for (int c = 0; c < REREADS; c++)
+            {
+                for (int w = 0; w < REREAD_WAITS; w++)
+                {
+                    fmt_format(label, sizeof(label), "%s %u", k_reread_names[c], k_reread_waits[w]);
+                    row = draw_span(row, label, &result->rereads[form][c * REREAD_WAITS + w]);
+                }
+            }
+        }
+
+        shell_line(row++, COLOR_GREEN, "BUFFER HITS 02H %u/8 03H %u/8", hits(result->rereads[0]),
+            hits(result->rereads[1]));
+        shell_line(row++, COLOR_GRAY, "3: AFTER A READ OF L-2 TO L");
+        return;
+    }
+
     shell_line(row++, COLOR_CYAN, "TIME TO THE FIRST PACKET, MS");
 
     for (int state = 0; state < STATES; state++)
@@ -463,7 +550,7 @@ static void summary(const void* data, uint32_t steps, char* line, uint8_t* color
     const timing_t* result = (const timing_t*)data;
     (void)steps;
 
-    fmt_format(line, 34, "PERIOD %u US AHEAD %u/%u", mean_interval(&result->speed[1][0]), depth(result->depths[0]),
-        depth(result->depths[1]));
+    fmt_format(line, 34, "PERIOD %u US AHEAD %u/%u RE %u/%u", mean_interval(&result->speed[1][0]),
+        depth(result->depths[0]), depth(result->depths[1]), hits(result->rereads[0]), hits(result->rereads[1]));
     *color = COLOR_WHITE;
 }
