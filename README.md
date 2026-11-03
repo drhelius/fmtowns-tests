@@ -7,7 +7,7 @@
 
 Hardware tests for the FM Towns family made by analyzing actual hardware.
 
-<img src="https://github.com/user-attachments/assets/a0fd44a3-dd47-4b58-8713-ec0885b19b4a" />
+<img width="500" src="https://github.com/user-attachments/assets/a0fd44a3-dd47-4b58-8713-ec0885b19b4a" />
 
 
 ## Test Discs
