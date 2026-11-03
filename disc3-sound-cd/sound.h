@@ -11,6 +11,8 @@
 #define SND_GATE_PCM 0x01
 #define SND_OUTPUT 0x40
 #define SND_OUTPUT_ONES 0x3F
+#define SND_CD_EN 0x04
+#define SND_CD_0DB 0x3F
 #define REC_MAX_STEPS 24
 
 typedef struct
@@ -45,6 +47,7 @@ void snd_pcm_on(uint8_t mask);
 void snd_pcm_square(uint32_t offset, uint32_t half, uint8_t high, uint8_t low);
 void snd_buzzer_pit(int mode, uint16_t count);
 void snd_buzzer_sound(int on);
+void snd_cd_channels(uint8_t control, uint8_t data);
 int snd_buzzer_cff98(int on);
 void rec_start_hook(void (*hook)(void));
 int rec_play(const char* title, const rec_step_t* steps, int count, rec_action_t action, uint32_t* starts);

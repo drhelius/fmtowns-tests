@@ -60,12 +60,12 @@ static const rec_step_t k_schedule[] =
     { "BUZZER HIGH, SOUND ON", 2000, 2000, A_BUZZER_DC, 0 },
     { "BUZZER HIGH, SOUND ON", 2000, 2000, A_BUZZER_DC, 0 },
     { "BUZZER HIGH, SOUND ON", 2000, 2000, A_BUZZER_DC, 0 },
-    { "CD-DA TRACK 3", 29000, 1000, A_CDDA, 0 }
+    { "CD-DA TRACK 3", 32000, 1000, A_CDDA, 0 }
 };
 
 const test_t g_test_coupling =
 {
-    "3.4", "OUTPUT COUPLING", "REC", 0, 1, sizeof(coupling_t), 0, run, pages, page, summary
+    "3.4", "OUTPUT COUPLING", "REC", 0, 2, sizeof(coupling_t), 0, run, pages, page, summary
 };
 
 static void run(void* data, uint32_t steps)
@@ -79,6 +79,7 @@ static void run(void* data, uint32_t steps)
     cd_quiet();
     cd_load_toc(&log);
     snd_open(&saved);
+    snd_cd_channels(SND_CD_EN, SND_CD_0DB);
     shell_step("WAVES");
     snd_pcm_write(WAVE_DC, k_dc, 2);
 

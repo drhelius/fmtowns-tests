@@ -1,15 +1,18 @@
 #include "tests.h"
 
 // 3.12 CD-DA play timing and end (docs/12, HT-52): how long play takes to start by distance and by the drive's
-// state, what a stop leaves the drive in, how exact and how fine sub-Q is over a minute, what comes at the end of a
-// range with and without repeat, whether pause and resume keep the position, and what the subcode ports 04CCh and
-// 04CDh show while audio plays
+// state, near and far after a stop, what a stop leaves the drive in, how exact and how fine sub-Q is over a minute,
+// what comes at the end of a range with and without repeat, whether pause and resume keep the position, and what the
+// subcode ports 04CCh and 04CDh show while audio plays
 
 #define REPEATS 8
 #define STATE_REPEATS 4
 #define DISTANCES 5
-#define STATES 10
-#define FIRST_READ_STATE 6
+#define STATES 12
+#define FIRST_READ_STATE 7
+#define FAR_PLAY_STATE 6
+#define NEAR_READ_STATE 11
+#define NEAR_LBA 39800u
 #define POSITION_US 60000000u
 #define POSITION_STEP_US 100000u
 #define RAW_SAMPLES 20
@@ -20,7 +23,7 @@
 #define STOP_EVENTS 16
 #define PAUSE_POINTS 5
 #define SUBCODE_CHANGES 16
-#define LATENCY_LIMIT 6000000u
+#define LATENCY_LIMIT 8000000u
 #define STOP_WATCH_US 12000000u
 #define FRAME_US 13333u
 #define NO_TIME 0xFFFFFFFFu
@@ -121,13 +124,13 @@ static const test_step_t k_steps[] =
 
 static const char* const k_distance_names[DISTANCES] = { "T7 +0", "T7 +59", "30 MIN", "50 MIN", "70 MIN" };
 static const char* const k_state_names[STATES] = { "PLAYING", "PAUSED", "STOP +0", "STOP +1", "STOP +3", "STOP +10",
-    "RD PLAY", "RD STOP+0", "RD STOP+3", "RD STOP+10" };
-static const uint8_t k_state_stops[STATES] = { 0, 0, 1, 1, 1, 1, 0, 1, 1, 1 };
-static const uint8_t k_state_waits[STATES] = { 0, 0, 0, 1, 3, 10, 0, 0, 3, 10 };
+    "70M STOP+3", "RD PLAY", "RD STOP+0", "RD STOP+3", "RD STOP+10", "RD NEAR+3" };
+static const uint8_t k_state_stops[STATES] = { 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1 };
+static const uint8_t k_state_waits[STATES] = { 0, 0, 0, 1, 3, 10, 3, 0, 0, 3, 10, 3 };
 
 const test_t g_test_play =
 {
-    "3.12", "CD-DA PLAY AND END", 0, TEST_RUN_ALL, 2, sizeof(play_t), k_steps, run, pages, page, summary
+    "3.12", "CD-DA PLAY AND END", 0, TEST_RUN_ALL, 3, sizeof(play_t), k_steps, run, pages, page, summary
 };
 
 static void run(void* data, uint32_t steps)
@@ -178,11 +181,13 @@ static void accepted(latency_t* entry, const cd_log_t* log)
 }
 
 // From the play command to the time audio started: the first sub-Q at or past the target that moved since the sample
-// before, less the frames it is past the target. The sample's time is that of its first packet
+// before, less the frames it is past the target. The sample's time is that of its first packet. The drive holds the
+// first query until the sound starts, so it waits that long
 static uint32_t timed_play(latency_t* entry, uint32_t target)
 {
     cd_log_t log;
     uint32_t previous = 0xFFFFFFFFu;
+    uint32_t first = CD_HOLD_US;
 
     cd_play(&log, target, cd_track_end(CD_TRACKS) + 1, 0);
     accepted(entry, &log);
@@ -191,8 +196,11 @@ static uint32_t timed_play(latency_t* entry, uint32_t target)
     {
         cd_subq_t subq;
         cd_log_t query;
+        int valid = cd_subq_wait(&subq, &query, 0x01, first);
 
-        if (!cd_subq_query(&subq, &query, 0x01))
+        first = 500000u;
+
+        if (!valid)
             continue;
 
         if (subq.absolute >= target + 150 && previous != 0xFFFFFFFFu && subq.absolute != previous)
@@ -244,8 +252,10 @@ static void step_distance(play_t* result)
     cd_quiet();
 }
 
-// Track 7 plays for 2 s first. Plays to track 7 + 10 s: while it plays, after a pause and after a stop (84h) and a
-// wait; reads of LBA 1000 to their first data ready: while it plays and after a stop and a wait
+// Track 7 plays for 2 s after its sound starts. Plays to track 7 + 10 s: while it plays, after a pause and after a
+// stop (84h) and a wait, and to track 12 (70 minutes out) 3 s after a stop; reads of LBA 1000 to their first data
+// ready: while it plays and after a stop and a wait, and of LBA 39800 (near the head) 3 s after a stop. Near and far
+// after the same stop tell whether the seek runs while the disc spins up
 static void step_state(play_t* result)
 {
     static const uint8_t k_zero[8];
@@ -263,6 +273,7 @@ static void step_state(play_t* result)
             shell_step("%s %u/%u", k_state_names[k], i + 1, STATE_REPEATS);
             cd_quiet();
             cd_play(&log, cd_track(7), cd_track_end(7) + 1, 0);
+            cd_wait_sound();
             tb_delay(2000000u);
 
             if (k == 1)
@@ -278,11 +289,11 @@ static void step_state(play_t* result)
 
             if (k < FIRST_READ_STATE)
             {
-                add_time(entry, timed_play(entry, target));
+                add_time(entry, timed_play(entry, k == FAR_PLAY_STATE ? cd_track(12) : target));
                 continue;
             }
 
-            cd_read(&log, CD_READ | CD_STATUS, CD_PAD_LBA, 1);
+            cd_read(&log, CD_READ | CD_STATUS, k == NEAR_READ_STATE ? NEAR_LBA : CD_PAD_LBA, 1);
             accepted(entry, &log);
             uint32_t ready = cd_time_of(&log, 0x22, 0);
 
@@ -306,8 +317,8 @@ static void add_stop_event(events_t* events, uint32_t time, const uint8_t* bytes
     events->count++;
 }
 
-// 84h while track 7 plays, then 80h every 200 ms for 12 s: every packet of the stop, every 80h answer that changed and
-// every packet that came unasked. Then a play of track 7 from that state, until 80h reports it playing
+// 84h 2 s into track 7's sound, then 80h every 200 ms for 12 s: every packet of the stop, every 80h answer that
+// changed and every packet that came unasked. Then a play of track 7 from that state, until 80h reports it playing
 static void step_stop(play_t* result)
 {
     uint8_t previous[4] = { 0xFF, 0xFF, 0xFF, 0xFF };
@@ -316,6 +327,7 @@ static void step_stop(play_t* result)
     shell_step("STOP, THEN 80H");
     cd_quiet();
     cd_play(&log, cd_track(7), cd_track_end(7) + 1, 0);
+    cd_wait_sound();
     tb_delay(2000000u);
     cd_stop(&log);
     uint32_t start = log.start;
@@ -407,6 +419,7 @@ static void step_position(play_t* result)
 
     shell_step("SUB-Q FORMATS");
     cd_play(&log, cd_track(7), cd_track_end(7) + 1, 0);
+    cd_wait_sound();
     tb_delay(1500000u);
     cd_subq_query(&subq, &log, 0x00);
     cd_keep(&result->format0, &log);
@@ -605,6 +618,7 @@ static void step_subcode(play_t* result)
 
     shell_step("SUBCODE PORTS");
     cd_play(&log, cd_track(7), cd_track_end(7) + 1, 0);
+    cd_wait_sound();
     tb_delay(1500000u);
     result->subcode_and[0] = 0xFF;
     result->subcode_and[1] = 0xFF;
@@ -691,6 +705,8 @@ static void page(const void* data, uint32_t steps, int number)
 
         row++;
         shell_line(row++, COLOR_GRAY, "STOP +N: 84H, THEN N S");
+        shell_line(row++, COLOR_GRAY, "70M: PLAY TRACK 12 INSTEAD");
+        shell_line(row++, COLOR_GRAY, "RD NEAR: LBA 39800 INSTEAD");
         return;
     }
 

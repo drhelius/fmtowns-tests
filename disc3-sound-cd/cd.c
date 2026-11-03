@@ -391,12 +391,18 @@ int cd_subq(cd_subq_t* subq)
 // The log keeps every packet, so a caller sees what came with the answer
 int cd_subq_query(cd_subq_t* subq, cd_log_t* log, uint8_t format)
 {
+    return cd_subq_wait(subq, log, format, 500000u);
+}
+
+// The first command after a play is held until its sound starts, seconds after a stop, so that query waits CD_HOLD_US
+int cd_subq_wait(cd_subq_t* subq, cd_log_t* log, uint8_t format, uint32_t first)
+{
     uint8_t parameters[8] = { format, 0, 0, 0, 0, 0, 0, 0 };
     int found = 0;
 
     memset(subq, 0, sizeof(*subq));
     cd_send(log, CD_SUBQ | CD_STATUS, parameters, 0);
-    cd_collect(log, 500000u, 30000u, 600000u, 0);
+    cd_collect(log, first, 30000u, first + 100000u, 0);
 
     for (int i = 0; i < log->count; i++)
     {
@@ -434,6 +440,15 @@ int cd_subq_query(cd_subq_t* subq, cd_log_t* log, uint8_t format)
 
     subq->valid = found == 4;
     return subq->valid;
+}
+
+// A play's sound has started once the query held until then answers; a drive that doesn't hold answers at once
+int cd_wait_sound(void)
+{
+    cd_subq_t subq;
+    cd_log_t log;
+
+    return cd_subq_wait(&subq, &log, 0x01, CD_HOLD_US);
 }
 
 // 16 control/ADR point and 17 M S F pairs: A0 the first track, A1 the last, A2 the lead-out

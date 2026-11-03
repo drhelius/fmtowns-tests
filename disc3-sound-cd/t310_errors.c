@@ -118,7 +118,7 @@ static const uint32_t k_leftover_us[LEFTOVERS] = { 10, 500, 2000 };
 
 const test_t g_test_errors =
 {
-    "3.10", "CDC ERRORS, EDGE CASES", 0, TEST_RUN_ALL, 3, sizeof(errors_t), k_steps, run, pages, page, summary
+    "3.10", "CDC ERRORS, EDGE CASES", 0, TEST_RUN_ALL, 4, sizeof(errors_t), k_steps, run, pages, page, summary
 };
 
 static void run(void* data, uint32_t steps)
@@ -407,8 +407,9 @@ static void step_unknown(errors_t* result)
 }
 
 // 04C0h and IRQ9 right after the reset and 1 ms later, then every packet in 500 ms; both masks set. Between sectors,
-// a sector announced after the reset is transferred and the LBA it carries kept. The reset during a DMA is a step of
-// its own: it locked the Marty 2
+// a sector announced after the reset is transferred and the LBA it carries kept. During CD-DA the reset comes 1 s
+// after the sound starts, as the held first sub-Q tells. The reset during a DMA is a step of its own: it locked the
+// Marty 2
 static void step_srst(errors_t* result, int dma)
 {
     for (int i = 0; i < SRST_CASES; i++)
@@ -441,7 +442,8 @@ static void step_srst(errors_t* result, int dma)
         {
             cd_masks(0);
             cd_play(&log, cd_track(7), cd_track_end(7) + 1, 0);
-            tb_delay(2000000u);
+            cd_wait_sound();
+            tb_delay(1000000u);
             cd_subq(&subq);
             entry->before = subq.absolute;
             cd_masks(CD_CONTROL_SMIM | CD_CONTROL_DEIM);

@@ -3,7 +3,8 @@
 // 3.5 CD-DA stop and CDC status log (docs/12, HT-27): what 84h+STATUS answers while track 7 plays and what the
 // next 80h+STATUS answers: 00 0D as a third packet queued with the stop, as the answer to the next 80h only, or
 // never. Then the same with audio already stopped and with a seek in place of the first 80h, pause
-// and resume, and every command the BIOS uses sent eight times from idle with its packets and their times
+// and resume, and every command the BIOS uses sent eight times from idle with its packets and their times. Plays
+// wait for their sound before the 2 s that come before the stop or the pause
 
 #define LOGS_STOP 4
 #define LOGS_STOPPED 7
@@ -61,7 +62,7 @@ static const command_t k_commands[COMMANDS] =
 
 const test_t g_test_stop =
 {
-    "3.5", "CD-DA STOP AND STATUS", 0, TEST_RUN_ALL, 1, sizeof(stop_t), k_steps, run, pages, page, summary
+    "3.5", "CD-DA STOP AND STATUS", 0, TEST_RUN_ALL, 2, sizeof(stop_t), k_steps, run, pages, page, summary
 };
 
 static void run(void* data, uint32_t steps)
@@ -91,6 +92,7 @@ static void play_track(void)
 {
     cd_log_t log;
     cd_play(&log, cd_track(7), cd_track_end(7) + 1, 0);
+    cd_wait_sound();
     tb_delay(PLAY_US);
 }
 

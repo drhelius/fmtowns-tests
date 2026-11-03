@@ -31,6 +31,17 @@ void snd_open(snd_saved_t* saved)
     out8(0x04EC, (uint8_t)((saved->port_04ec & 0x80) | SND_OUTPUT | SND_OUTPUT_ONES));
 }
 
+// Both CD-DA channels of the second MB87078, which the Marty 2's boot ROM leaves muted: control bits EN 04h, C0 08h,
+// C32 10h, and the 6-bit data
+void snd_cd_channels(uint8_t control, uint8_t data)
+{
+    for (uint8_t channel = 0; channel < 2; channel++)
+    {
+        out8(0x04E3, (uint8_t)(channel | control));
+        out8(0x04E2, data);
+    }
+}
+
 void snd_close(const snd_saved_t* saved)
 {
     snd_fm_silence();

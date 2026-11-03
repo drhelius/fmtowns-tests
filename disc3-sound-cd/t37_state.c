@@ -4,7 +4,7 @@
 // acceptance and 02h at data ready and read done in the Marty's first read on disc 1 (1.6). One-sector reads with
 // STATUS, every packet logged; 80h polls around them, after idle times, around CD-DA play, pause and stop, and the
 // same byte in a seek and a raw read. The disc's first CDC command since boot,
-// whichever test sends it, is a read of LBA 1 (cd.c); step 1 shows it
+// whichever test sends it, is a read of LBA 1 (cd.c); step 1 shows it. Around CD-DA, 2 s pass after the sound starts
 
 #define EVENTS 128
 #define ATTEMPTS 8
@@ -89,7 +89,7 @@ static const uint32_t k_idle_us[IDLE_WAITS] = { 5000000u, 15000000u, 30000000u, 
 
 const test_t g_test_state =
 {
-    "3.7", "CDC DRIVE STATE", 0, TEST_RUN_ALL, 1, sizeof(state_t), k_steps, run, pages, page, summary
+    "3.7", "CDC DRIVE STATE", 0, TEST_RUN_ALL, 2, sizeof(state_t), k_steps, run, pages, page, summary
 };
 
 static void run(void* data, uint32_t steps)
@@ -267,6 +267,7 @@ static void step_cdda(state_t* result)
     shell_step("PLAY, READ");
     cd_play(&log, cd_track(7), cd_track_end(7) + 1, 0);
     add_event(result, STEP_CDDA, KIND_PLAY, 1, &log);
+    cd_wait_sound();
     tb_delay(2000000u);
     read_logged(result, STEP_CDDA, CD_READ | CD_STATUS, CD_PAD_LBA, &log);
     poll(result, STEP_CDDA);
@@ -274,6 +275,7 @@ static void step_cdda(state_t* result)
     shell_step("PLAY, STOP, READ");
     cd_play(&log, cd_track(7), cd_track_end(7) + 1, 0);
     add_event(result, STEP_CDDA, KIND_PLAY, 1, &log);
+    cd_wait_sound();
     tb_delay(2000000u);
     simple(result, STEP_CDDA, KIND_STOP, CD_STOP | CD_STATUS);
     read_logged(result, STEP_CDDA, CD_READ | CD_STATUS, CD_PAD_LBA, &log);
@@ -281,6 +283,7 @@ static void step_cdda(state_t* result)
     shell_step("PLAY, PAUSE, READ, RESUME");
     cd_play(&log, cd_track(7), cd_track_end(7) + 1, 0);
     add_event(result, STEP_CDDA, KIND_PLAY, 1, &log);
+    cd_wait_sound();
     tb_delay(2000000u);
     simple(result, STEP_CDDA, KIND_PAUSE, CD_PAUSE | CD_STATUS);
     read_logged(result, STEP_CDDA, CD_READ | CD_STATUS, CD_PAD_LBA, &log);

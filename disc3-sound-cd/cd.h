@@ -49,6 +49,7 @@
 #define CD_NO_LBA 0x00FFFFFFu
 
 #define CD_LOG_PACKETS 32
+#define CD_HOLD_US 6000000u
 #define CD_PACKET_DMA_NONE 0xDD
 #define CD_PACKET_DMA 0xDE
 #define CD_PACKET_DMA_TIMEOUT 0xDF
@@ -183,6 +184,8 @@ void cd_state(cd_log_t* log);
 void cd_stop(cd_log_t* log);
 int cd_subq(cd_subq_t* subq);
 int cd_subq_query(cd_subq_t* subq, cd_log_t* log, uint8_t format);
+int cd_subq_wait(cd_subq_t* subq, cd_log_t* log, uint8_t format, uint32_t first);
+int cd_wait_sound(void);
 int cd_load_toc(cd_log_t* log);
 uint32_t cd_track(int track);
 uint32_t cd_track_end(int track);

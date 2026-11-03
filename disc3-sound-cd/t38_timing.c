@@ -3,8 +3,9 @@
 // 3.8 CD read timing (docs/12, HT-48): times from the command write to data ready (22h), to read done (06h) and to
 // DMA end, the DMA started at each 22h. The sector period of long reads (13.3 ms at 1x), how deep the read-ahead is
 // and how fast it fills, seek times by distance in both directions as reads and as 00h seeks, how fast each read
-// form is accepted from idle, from a spinning drive and during CD-DA, and whether a sector just read, or one before
-// it, comes back from the buffer when read again. Each point keeps the minimum and maximum
+// form is accepted from idle, from a spinning drive and during CD-DA, whether a sector just read, or one before it,
+// comes back from the buffer when read again, and how long the same sector takes to come round again from the inner
+// to the outer data area. Each point keeps the minimum and maximum
 
 #define SPEED_RUNS 2
 #define SPEED_SIZES 2
@@ -21,6 +22,7 @@
 #define STATES 3
 #define FORMS 3
 #define ACCEPT_REPEATS 4
+#define ROTATIONS 5
 #define AHEAD_LBA 3000u
 #define SEEK_LBA CD_PAD_LBA
 #define FAST_US 5000u
@@ -57,6 +59,7 @@ typedef struct
     span_t seeks[DISTANCES][2];
     span_t accept[STATES][FORMS];
     span_t rereads[2][REREADS * REREAD_WAITS];
+    span_t rotations[ROTATIONS];
 } timing_t;
 
 static void run(void* data, uint32_t steps);
@@ -68,6 +71,7 @@ static void step_ahead(timing_t* result);
 static void step_seeks(timing_t* result);
 static void step_accept(timing_t* result);
 static void step_reread(timing_t* result);
+static void step_rotation(timing_t* result);
 static uint32_t timed_read(uint8_t command, uint32_t lba);
 static uint32_t timed_seek(uint32_t lba);
 static void span_add(span_t* span, uint32_t time);
@@ -84,6 +88,7 @@ static const test_step_t k_steps[] =
     { "SEEKS", 0 },
     { "COMMAND ACCEPTANCE", 0 },
     { "RE-READ", 0 },
+    { "ROTATION BY RADIUS", 0 },
     { 0, 0 }
 };
 
@@ -96,12 +101,13 @@ static const char* const k_form_names[FORMS] = { "02H", "03H", "00H" };
 static const char* const k_state_names[STATES] = { "IDLE", "SPIN", "CD-DA" };
 static const char* const k_reread_names[REREADS] = { "SAME", "PREV", "3:MID", "3:1ST" };
 static const uint16_t k_reread_waits[REREAD_WAITS] = { 0, 200 };
+static const uint32_t k_rotation_lba[ROTATIONS] = { 3000, 10000, 20000, 30000, 39000 };
 
 static uint32_t s_sink[SINK];
 
 const test_t g_test_timing =
 {
-    "3.8", "CD READ TIMING", 0, TEST_RUN_ALL, 2, sizeof(timing_t), k_steps, run, pages, page, summary
+    "3.8", "CD READ TIMING", 0, TEST_RUN_ALL, 3, sizeof(timing_t), k_steps, run, pages, page, summary
 };
 
 static void run(void* data, uint32_t steps)
@@ -120,6 +126,9 @@ static void run(void* data, uint32_t steps)
 
     if ((steps & 0x10) != 0)
         step_reread(result);
+
+    if ((steps & 0x20) != 0)
+        step_rotation(result);
 
     if ((steps & 0x04) != 0)
         step_seeks(result);
@@ -235,6 +244,21 @@ static void step_reread(timing_t* result)
                         timed_read(command, AHEAD_LBA - (c == 0 ? 0 : c == 3 ? 2 : 1)));
                 }
             }
+        }
+    }
+}
+
+// A one-sector read of L, then L again at once: about one turn of the disc, which grows with the radius at a constant
+// linear velocity
+static void step_rotation(timing_t* result)
+{
+    for (int r = 0; r < ROTATIONS; r++)
+    {
+        for (int i = 0; i < REPEATS; i++)
+        {
+            shell_step("ROTATION LBA %u %u/%u", k_rotation_lba[r], i + 1, REPEATS);
+            timed_read(CD_READ | CD_STATUS, k_rotation_lba[r]);
+            span_add(&result->rotations[r], timed_read(CD_READ | CD_STATUS, k_rotation_lba[r]));
         }
     }
 }
@@ -404,7 +428,7 @@ static int pages(const void* data, uint32_t steps)
 {
     (void)data;
     (void)steps;
-    return 7;
+    return 8;
 }
 
 static void page(const void* data, uint32_t steps, int number)
@@ -529,6 +553,23 @@ static void page(const void* data, uint32_t steps, int number)
         shell_line(row++, COLOR_GREEN, "BUFFER HITS 02H %u/8 03H %u/8", hits(result->rereads[0]),
             hits(result->rereads[1]));
         shell_line(row++, COLOR_GRAY, "3: AFTER A READ OF L-2 TO L");
+        return;
+    }
+
+    if (number == 7)
+    {
+        shell_line(row++, COLOR_CYAN, "02H OF L, THEN L AGAIN AT ONCE");
+        shell_line(row++, COLOR_GRAY, "LBA       22H MIN-MAX MS   FAILED");
+
+        for (int r = 0; r < ROTATIONS; r++)
+        {
+            fmt_format(label, sizeof(label), "%u", k_rotation_lba[r]);
+            row = draw_span(row, label, &result->rotations[r]);
+        }
+
+        row++;
+        shell_line(row++, COLOR_GRAY, "ABOUT ONE TURN: LONGER FARTHER OUT");
+        shell_line(row++, COLOR_GRAY, "AT A CONSTANT LINEAR VELOCITY");
         return;
     }
 

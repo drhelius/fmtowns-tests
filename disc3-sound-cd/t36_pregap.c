@@ -2,8 +2,9 @@
 
 // 3.6 CD-DA pregaps and emphasis (docs/12, HT-43): the TOC as the CDC reports it, sub-Q every 100 ms while playing
 // from track 4's INDEX 00 (440 Hz in the pregap, 880 Hz after it) and from its INDEX 01, and from 3 s before the end
-// of the data track into track 2. Whether the pregap tones and the data area are heard, and whether track 5's
-// pre-emphasis flag is applied, come from a recording; tracks 5 and 6 differ only in that flag
+// of the data track into track 2, counted from the first answer: the drive holds the first query until the play's
+// sound starts. Whether the pregap tones and the data area are heard, and whether track 5's pre-emphasis flag is
+// applied, come from a recording; tracks 5 and 6 differ only in that flag
 
 #define TOC_PACKETS 24
 #define SAMPLES 60
@@ -36,7 +37,8 @@ typedef struct
     uint32_t first;
     uint32_t end;
     uint8_t count;
-    uint8_t reserved[3];
+    uint8_t reserved;
+    uint16_t held;
     cd_keep_t play;
     sample_t samples[SAMPLES];
 } pregap_run_t;
@@ -72,13 +74,13 @@ static const test_step_t k_steps[] =
 
 static const rec_step_t k_schedule[] =
 {
-    { "TRACK 5, EMPHASIS", 16000, 1000, 0, 5 },
-    { "TRACK 6, NO FLAG", 16000, 1000, 0, 6 }
+    { "TRACK 5, EMPHASIS", 19000, 1000, 0, 5 },
+    { "TRACK 6, NO FLAG", 19000, 1000, 0, 6 }
 };
 
 const test_t g_test_pregap =
 {
-    "3.6", "CD-DA PREGAP, EMPHASIS", "REC", TEST_RUN_ALL, 1, sizeof(pregap_t), k_steps, run, pages, page,
+    "3.6", "CD-DA PREGAP, EMPHASIS", "REC", TEST_RUN_ALL, 2, sizeof(pregap_t), k_steps, run, pages, page,
     summary
 };
 
@@ -115,6 +117,7 @@ static void run(void* data, uint32_t steps)
     {
         snd_saved_t saved;
         snd_open(&saved);
+        snd_cd_channels(SND_CD_EN, SND_CD_0DB);
         shell_step("EMPHASIS");
         rec_play("PRE-EMPHASIS FLAG", k_schedule, COUNT_OF(k_schedule), action, result->starts);
         snd_close(&saved);
@@ -132,13 +135,14 @@ static void sample_run(pregap_run_t* run, uint32_t first, uint32_t end, uint32_t
     cd_play(&log, first, end, 0);
     cd_keep(&run->play, &log);
     uint32_t start = tb_now();
+    uint32_t sound = 0;
 
     for (int i = 0; i < SAMPLES; i++)
     {
-        uint32_t due = (uint32_t)i * SAMPLE_US;
+        uint32_t due = sound + (uint32_t)i * SAMPLE_US;
         cd_subq_t subq;
 
-        if (due >= microseconds)
+        if (due - sound >= microseconds)
             break;
 
         while (tb_now() - start < due)
@@ -146,7 +150,14 @@ static void sample_run(pregap_run_t* run, uint32_t first, uint32_t end, uint32_t
 
         sample_t* sample = &run->samples[i];
         sample->time = (uint16_t)((tb_now() - start) / 1000u);
-        sample->valid = (uint8_t)cd_subq(&subq);
+        sample->valid = (uint8_t)(i == 0 ? cd_subq_wait(&subq, &log, 0x01, CD_HOLD_US) : cd_subq(&subq));
+
+        if (i == 0)
+        {
+            sound = log.count != 0 ? log.start + log.packets[0].time - start : tb_now() - start;
+            run->held = (uint16_t)(sound / 1000u);
+        }
+
         sample->status = subq.status;
         memcpy(sample->q18, subq.raw, 4);
         memcpy(sample->relative, subq.raw + 5, 3);
@@ -212,6 +223,7 @@ static int draw_run(int row, const char* title, const pregap_run_t* run)
     else
         shell_line(row++, COLOR_YELLOW, "PLAY: NO ANSWER");
 
+    shell_line(row++, COLOR_WHITE, "FIRST SUB-Q ANSWERED AT %u MS", run->held);
     shell_line(row++, COLOR_GRAY, "  MS ST 18H PACKET RELATIVE ABSOLUTE");
 
     for (int i = 0; i < run->count && row <= SHELL_BODY_BOTTOM - 1; i += step)
@@ -254,7 +266,7 @@ static void page(const void* data, uint32_t steps, int number)
         row = cd_draw_packets(row, result->toc, result->toc_count);
         row++;
         shell_line(row++, COLOR_GRAY, "BUILT: T2 08:57:25 T4 09:47:25 PRE T5");
-        shell_line(row++, COLOR_GRAY, "T4 INDEX 00 09:45:25, OUT 11:27:25");
+        shell_line(row++, COLOR_GRAY, "T4 INDEX 00 09:45:25, OUT 72:00:00");
         return;
     }
 
