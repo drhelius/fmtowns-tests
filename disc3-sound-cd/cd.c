@@ -37,9 +37,10 @@ static uint32_t s_first_time SHELL_STATE;
 
 // The layout mkimage.py and tracks/mktracks.py build, for when the TOC can't be read; track 4's INDEX 00 is 150
 // sectors before its start
-static const uint32_t k_starts[CD_TRACKS + 1] = { 0, 0, 40150, 41650, 43900, 44650, 45775, 46900, 51400 };
-static const uint8_t k_controls[CD_TRACKS + 1] = { 0, 4, 0, 0, 0, 1, 0, 0, 0 };
-static const uint32_t k_leadout = 69400;
+static const uint32_t k_starts[CD_TRACKS + 1] = { 0, 0, 40150, 41650, 43900, 44650, 45775, 46900, 51400, 69400,
+    134850, 224850, 314850 };
+static const uint8_t k_controls[CD_TRACKS + 1] = { 0, 4, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 };
+static const uint32_t k_leadout = 323850;
 
 static void add_packet(cd_log_t* log, uint32_t time, const uint8_t* bytes);
 static void run_dma(cd_log_t* log, uint32_t index);
@@ -242,6 +243,13 @@ void cd_collect(cd_log_t* log, uint32_t first, uint32_t quiet, uint32_t limit, u
             if ((options & CD_HOLD_DMA) != 0 && bytes[0] == 0x22)
                 break;
 
+            if ((options & CD_UNTIL_STOP) != 0 &&
+                (bytes[0] == 0x11 || bytes[0] == 0x21 || (bytes[0] == 0x00 && bytes[1] == 0x09)))
+            {
+                log->flags |= CD_LOG_DONE;
+                break;
+            }
+
             continue;
         }
 
@@ -251,7 +259,7 @@ void cd_collect(cd_log_t* log, uint32_t first, uint32_t quiet, uint32_t limit, u
             break;
         }
 
-        if (log->total == 0 ? elapsed >= first : now - last >= quiet)
+        if (log->total == 0 ? elapsed >= first : ((options & CD_UNTIL_STOP) == 0 && now - last >= quiet))
             break;
     }
 
@@ -373,19 +381,26 @@ void cd_stop(cd_log_t* log)
 }
 
 // 00 xx, then 18 00 track index, 19 relative M S F, 19 00 absolute M S, 20 absolute F
+// The system ROM sends P0 = 01h every time; the first disc 3 builds sent 00h and the Marty 2 never gave a position
 int cd_subq(cd_subq_t* subq)
 {
-    static const uint8_t k_zero[8];
     cd_log_t log;
+    return cd_subq_query(subq, &log, 0x01);
+}
+
+// The log keeps every packet, so a caller sees what came with the answer
+int cd_subq_query(cd_subq_t* subq, cd_log_t* log, uint8_t format)
+{
+    uint8_t parameters[8] = { format, 0, 0, 0, 0, 0, 0, 0 };
     int found = 0;
 
     memset(subq, 0, sizeof(*subq));
-    cd_send(&log, CD_SUBQ | CD_STATUS, k_zero, 0);
-    cd_collect(&log, 500000u, 30000u, 600000u, 0);
+    cd_send(log, CD_SUBQ | CD_STATUS, parameters, 0);
+    cd_collect(log, 500000u, 30000u, 600000u, 0);
 
-    for (int i = 0; i < log.count; i++)
+    for (int i = 0; i < log->count; i++)
     {
-        const uint8_t* bytes = log.packets[i].bytes;
+        const uint8_t* bytes = log->packets[i].bytes;
 
         if (i == 0)
             subq->status = bytes[1];
@@ -504,6 +519,8 @@ void cd_reset(void)
 
 // CD-DA stopped, the queue drained until 300 ms pass with no packet, DMA masked and both requests acknowledged, as
 // the next test expects the CDC. A seek that retried can still answer after the stop's own packets
+// The stop ends with 11h once the disc has run down, 850 ms later on a Marty, and a play that hasn't started its
+// sound yet holds the stop until it does, about 2.3 s after a stop
 void cd_quiet(void)
 {
     static const uint8_t k_zero[8];
@@ -512,7 +529,7 @@ void cd_quiet(void)
     cd_masks(0);
     out8(0x00AF, 0x0F);
     cd_send(&log, CD_STOP | CD_STATUS, k_zero, 0);
-    cd_collect(&log, 2000000u, COMMAND_QUIET, 3000000u, 0);
+    cd_collect(&log, 4000000u, COMMAND_QUIET, 6000000u, CD_UNTIL_STOP);
 
     uint32_t start = tb_now();
 

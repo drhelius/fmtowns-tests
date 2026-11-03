@@ -40,7 +40,7 @@
 #define CD_PAUSE 0x85
 #define CD_RESUME 0x87
 
-#define CD_TRACKS 8
+#define CD_TRACKS 12
 #define CD_DATA_SECTORS 40000u
 #define CD_PAD_LBA 1000u
 #define CD_TAG_MAGIC 0x33544D46u
@@ -68,6 +68,7 @@
 #define CD_NO_WAIT 0x08
 #define CD_HOLD_DMA 0x10
 #define CD_KEEP_QUEUE 0x20
+#define CD_UNTIL_STOP 0x40
 
 // Pseudo packets CD_PACKET_DMA and CD_PACKET_DMA_TIMEOUT mark a DMA end, bytes 1-3 the LBA its data carried;
 // CD_PACKET_DMA_NONE a DMA that DTS never showed
@@ -181,6 +182,7 @@ void cd_play(cd_log_t* log, uint32_t first, uint32_t end, int repeat);
 void cd_state(cd_log_t* log);
 void cd_stop(cd_log_t* log);
 int cd_subq(cd_subq_t* subq);
+int cd_subq_query(cd_subq_t* subq, cd_log_t* log, uint8_t format);
 int cd_load_toc(cd_log_t* log);
 uint32_t cd_track(int track);
 uint32_t cd_track_end(int track);

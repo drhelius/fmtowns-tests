@@ -2,8 +2,9 @@
 """Writes disc 3's audio tracks as raw CD-DA (16-bit little-endian stereo at 44.1 kHz) and the track list that
 mkimage.py --audio reads. Track 2 follows the data track, so its 2 s pregap is left to the burner; track 4 keeps
 its 2 s INDEX 00 in the file; track 5 carries the pre-emphasis flag; track 7's right channel is 6 dB lower; track 8
-holds 4 minutes of the 1 kHz tone so 3.1 can play it once for all its CD-DA steps. cd.c expects this layout before it
-has the TOC.
+holds 4 minutes of the 1 kHz tone so 3.1 can play it once for all its CD-DA steps. Tracks 10, 11 and 12 start at
+30:00, 50:00 and 70:00 (track 9 fills the gap) so 3.12 can time long jumps; each starts with a 10 s tone and is silent
+after it, written in blocks rather than as samples. cd.c expects this layout before it has the TOC.
 """
 
 import array
@@ -13,6 +14,7 @@ import random
 import sys
 
 RATE = 44100
+SECTOR = 2352
 FULL = 32767
 HALF = 0.5
 
@@ -96,6 +98,32 @@ def write(path, samples, right=1.0):
         f.write(data.tobytes())
 
 
+# A tone of a whole number of sectors, then silence up to the track's length in sectors
+def write_long(path, sectors, frequency, seconds):
+    head = array.array("h")
+
+    for value in tone(frequency, seconds):
+        sample = max(-32768, min(32767, int(round(value * FULL))))
+        head.append(sample)
+        head.append(sample)
+
+    if sys.byteorder != "little":
+        head.byteswap()
+
+    data = head.tobytes()
+    data += bytes((-len(data)) % SECTOR)
+    silence = bytes(SECTOR * 1000)
+    left = sectors * SECTOR - len(data)
+
+    with open(path, "wb") as f:
+        f.write(data)
+
+        while left > 0:
+            chunk = min(left, len(silence))
+            f.write(silence[:chunk])
+            left -= chunk
+
+
 def main():
     if len(sys.argv) != 2:
         print("usage: mktracks.py <output directory>")
@@ -115,11 +143,23 @@ def main():
         ("track08.raw", 0, 0, "", tone(1000, 240)),
     ]
 
+    # Sectors from track 9's start (LBA 69400) to 30:00, 50:00 and 70:00 (LBA 134850, 224850, 314850), and 2 minutes
+    long_tracks = [
+        ("track09.raw", 65450, 300, 10),
+        ("track10.raw", 90000, 500, 10),
+        ("track11.raw", 90000, 700, 10),
+        ("track12.raw", 9000, 900, 10),
+    ]
+
     with open(os.path.join(out, "tracks.txt"), "w") as f:
         for track in tracks:
             name, pregap, index0, flags, samples = track[:5]
             write(os.path.join(out, name), samples, track[5] if len(track) > 5 else 1.0)
             f.write("%s %d %d %s\n" % (name, pregap, index0, flags))
+
+        for name, sectors, frequency, seconds in long_tracks:
+            write_long(os.path.join(out, name), sectors, frequency, seconds)
+            f.write("%s 0 0 \n" % name)
 
     return 0
 
