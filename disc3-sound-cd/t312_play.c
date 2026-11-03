@@ -189,7 +189,7 @@ static uint32_t timed_play(latency_t* entry, uint32_t target)
     uint32_t previous = 0xFFFFFFFFu;
     uint32_t first = CD_HOLD_US;
 
-    cd_play(&log, target, cd_track_end(CD_TRACKS) + 1, 0);
+    cd_play(&log, target, cd_track_end(CD_TRACKS), 0);
     accepted(entry, &log);
 
     while (tb_now() - log.start < LATENCY_LIMIT)

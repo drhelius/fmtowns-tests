@@ -8,6 +8,7 @@ extern const check_group_t g_check_regs, g_check_ym_latch, g_check_ym_busy, g_ch
 extern const check_group_t g_check_pcm, g_check_fm_irq, g_check_adc, g_check_wave, g_check_cdc_dma, g_check_cdc_ends;
 extern const check_group_t g_check_cdc_ready, g_check_cdc_cpu, g_check_fdc_request, g_check_fdc_seeks, g_check_backup;
 extern const check_group_t g_check_cmos, g_check_card, g_check_ports, g_check_port_times;
+extern const check_group_t g_check_cd_stop, g_check_cd_pause_end, g_check_cd_answers, g_check_cd_read_done;
 
 static const check_group_t k_cpu = { "CPU", 0, 0, 0, 0 };
 static const check_group_t k_board = { "BOARD", 0, 0, 0, 0 };
@@ -15,6 +16,7 @@ static const check_group_t k_video = { "VIDEO", 0, 0, 0, 0 };
 static const check_group_t k_sprites = { "SPRITES", 0, 0, 0, 0 };
 static const check_group_t k_sound = { "SOUND", 0, 0, 0, 0 };
 static const check_group_t k_cdc = { "CD-ROM CONTROLLER", 0, 0, 0, 0 };
+static const check_group_t k_drive = { "CD-ROM DRIVE", 0, 0, 0, 0 };
 static const check_group_t k_storage = { "FLOPPY, CMOS, IC CARD", 0, 0, 0, 0 };
 static const check_group_t k_ports = { "PORT ACCESS TIMES", 0, 0, 0, 0 };
 
@@ -27,6 +29,7 @@ static const check_group_t* const k_groups[] =
     &k_sound, &g_check_ym_latch, &g_check_ym_busy, &g_check_ym_timers, &g_check_mixer, &g_check_pcm, &g_check_fm_irq,
     &g_check_adc, &g_check_wave,
     &k_cdc, &g_check_cdc_dma, &g_check_cdc_ends, &g_check_cdc_ready, &g_check_cdc_cpu,
+    &k_drive, &g_check_cd_stop, &g_check_cd_pause_end, &g_check_cd_answers, &g_check_cd_read_done,
     &k_storage, &g_check_fdc_request, &g_check_fdc_seeks, &g_check_backup, &g_check_cmos, &g_check_card,
     &k_ports, &g_check_ports, &g_check_port_times
 };

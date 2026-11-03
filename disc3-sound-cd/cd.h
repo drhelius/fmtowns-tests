@@ -43,6 +43,8 @@
 #define CD_TRACKS 12
 #define CD_DATA_SECTORS 40000u
 #define CD_PAD_LBA 1000u
+// The far sector reads use: the data track runs straight into track 2's pregap and its last sector can't be read
+#define CD_FAR_LBA 39800u
 #define CD_TAG_MAGIC 0x33544D46u
 #define CD_TAG_MIX 0x5A5A5A5Au
 #define CD_BUFFER 0x00100000u

@@ -6,15 +6,17 @@
 #define STEP_LATCH 0x10
 #define STEP_TIMERS 0x20
 #define STEP_ALONE 0x40
+#define STATUS_BITS 0x83
 
 static const uint8_t k_latch[5] = { 0x01, 0x01, 0x01, 0x01, 0x03 };
 static const uint8_t k_flags[4] = { 0x00, 0x01, 0x01, 0x01 };
 
-static int bytes_equal(const uint8_t* a, const uint8_t* b, int count)
+// Bits 2-6 of the status aren't driven and read whatever the bus last held, 3Ch one session and 00h another
+static int status_equal(const uint8_t* a, const uint8_t* b, int count)
 {
     for (int i = 0; i < count; i++)
     {
-        if (a[i] != b[i])
+        if ((a[i] & STATUS_BITS) != b[i])
             return 0;
     }
 
@@ -28,8 +30,8 @@ static void evaluate_latch(const void* data, uint32_t steps)
     uint32_t matching = 0;
     (void)steps;
 
-    check_true("04D8H LATCHES, 04DCH READS IT", bytes_equal(result->latch, k_latch, 5));
-    check_true("TIMER FLAG ON 04D8H ONLY LIVE", bytes_equal(result->flags, k_flags, 4));
+    check_true("04D8H LATCHES, 04DCH READS IT", status_equal(result->latch, k_latch, 5));
+    check_true("TIMER FLAG ON 04D8H ONLY LIVE", status_equal(result->flags, k_flags, 4));
 
     for (int write = 0; write < ALONE_WRITES; write++)
     {
@@ -69,16 +71,16 @@ static void evaluate_busy(const void* data, uint32_t steps)
     }
 
     for (int i = 0; i < 4; i++)
-        quiet &= result->after_address[i] == 0x00;
+        quiet &= (result->after_address[i] & STATUS_BITS) == 0x00;
 
     check_value("BUSY WAITS TIMED OUT", result->busy_timeouts, 0);
-    check_hex("BUSY AFTER AN ADDRESS WRITE", result->busy_first[0], 0x00);
-    check_hex("BUSY AFTER A DATA WRITE", result->busy_first[1], 0x80);
+    check_hex("BUSY AFTER AN ADDRESS WRITE", result->busy_first[0] & STATUS_BITS, 0x00);
+    check_hex("BUSY AFTER A DATA WRITE", result->busy_first[1] & STATUS_BITS, 0x80);
     check_true("NO BUSY AFTER ADDRESS WRITES", quiet);
     check_true("ALL PORTS BUSY AFTER DATA", (result->after_data[0] & result->after_data[1] & result->after_data[2] &
         result->after_data[3] & 0x80) != 0);
     check_true("100 US LATER ONLY 04D8H CLEAR", (result->later[0] & result->later[1] & result->later[2] & 0x80) != 0 &&
-        result->later[3] == 0x00);
+        (result->later[3] & STATUS_BITS) == 0x00);
     check_signed("BUSY AFTER DATA, US", (int32_t)data_busy - result->overhead, 20 - slack(), 32 + slack());
     check_signed("BUSY AFTER ADDRESS, US", (int32_t)address_busy - result->overhead, -6 - slack(), 6 + slack());
 }

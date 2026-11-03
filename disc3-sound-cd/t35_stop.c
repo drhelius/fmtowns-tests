@@ -14,6 +14,8 @@
 #define PLAY_US 2000000u
 #define IDLE_US 200000u
 #define SEEK_QUIET 1000000u
+#define SEEK_WAIT 4000000u
+#define STOP_WAIT 3000000u
 
 typedef struct
 {
@@ -178,6 +180,8 @@ static void step_commands(stop_t* result)
                 cd_stop(&log);
                 continue;
             }
+            else if (command == CD_TOC)
+                cd_load_toc(&log);
             else
             {
                 if (command == CD_SEEK)
@@ -186,7 +190,13 @@ static void step_commands(stop_t* result)
                     memcpy(parameters, k_set, sizeof(parameters));
 
                 cd_send(&log, (uint8_t)(command | CD_STATUS), parameters, 0);
-                cd_collect(&log, 2000000u, command == CD_SEEK ? SEEK_QUIET : 100000u, 4000000u, 0);
+
+                if (command == CD_SEEK)
+                    cd_collect(&log, 2000000u, SEEK_WAIT, SEEK_WAIT + 2000000u, CD_UNTIL_SEEK);
+                else if (command == CD_STOP)
+                    cd_collect(&log, 2000000u, 100000u, STOP_WAIT, CD_UNTIL_STOP);
+                else
+                    cd_collect(&log, 2000000u, 100000u, 4000000u, 0);
             }
 
             cd_series_add(&result->commands[i], &log, failed);

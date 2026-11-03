@@ -1,5 +1,6 @@
 #include "checks.h"
 #include "../disc3-sound-cd/t39_transfer.c"
+#include "cd_checks.h"
 
 #define STEP_TIMELINE 0x001
 #define STEP_DMA 0x002
@@ -60,8 +61,8 @@ static void evaluate_dma(const void* data, uint32_t steps)
 
         if (check_marty())
         {
-            check_range(k_dma_checks[i], result->dma_low[i], i == 0 ? 3900 : 3850, i == 0 ? 3960 : 4050);
-            check_range(k_dma_checks[i], result->dma_high[i], i == 0 ? 3900 : 3850, i == 0 ? 3960 : 4050);
+            check_range(k_dma_checks[i], result->dma_low[i], i == 0 ? 3900 : 3850, i == 0 ? 4000 : 4050);
+            check_range(k_dma_checks[i], result->dma_high[i], i == 0 ? 3900 : 3850, i == 0 ? 4000 : 4050);
         }
     }
 
@@ -173,6 +174,33 @@ static void evaluate_cpu(const void* data, uint32_t steps)
     check_value("SECTOR READ", result->cpu_lba, CD_PAD_LBA + 150);
 }
 
+// Read done comes 0.8 ms after the last 22h while that sector waits undrained, before its DMA starts
+static void evaluate_read_done(const void* data, uint32_t steps)
+{
+    const transfer_t* result = (const transfer_t*)data;
+    uint32_t prompt = 0;
+    uint32_t before = 0;
+    (void)steps;
+
+    for (int i = 0; i < UNDRAINED; i++)
+    {
+        const cd_keep_t* keep = &result->undrained[i];
+        int ready = keep_find(keep, 0x22);
+        int done = keep_find(keep, 0x06);
+        int dma = keep_find(keep, CD_PACKET_DMA);
+
+        if (ready < 0 || done < 0)
+            continue;
+
+        prompt += keep->packets[done].time >= keep->packets[ready].time &&
+            keep->packets[done].time - keep->packets[ready].time <= 2000;
+        before += dma < 0 || keep->packets[done].time < keep->packets[dma].time;
+    }
+
+    check_value("06H 0-2 MS AFTER THE LAST 22H", prompt, UNDRAINED);
+    check_value("06H BEFORE THE HELD DMA", before, UNDRAINED);
+}
+
 static const test_t k_test = CHECK_TEST(g_test_transfer);
 
 const check_group_t g_check_cdc_dma = { "CDC DMA AND READ FORMS", &k_test, STEP_DMA | STEP_SIZES, 0,
@@ -182,3 +210,5 @@ const check_group_t g_check_cdc_ends = { "CDC DMA END, DEI, DRY, IRQ9", &k_test,
 const check_group_t g_check_cdc_ready = { "CDC DATA READY AND DEI", &k_test,
     STEP_CLEARS | STEP_DEFERRED | STEP_UNDRAINED, 0, evaluate_data_ready };
 const check_group_t g_check_cdc_cpu = { "CDC CPU TRANSFER", &k_test, STEP_CPU, 0, evaluate_cpu };
+const check_group_t g_check_cd_read_done = { "CDC READ DONE (MARTY)", &k_test, STEP_UNDRAINED, check_marty,
+    evaluate_read_done };

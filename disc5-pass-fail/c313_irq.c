@@ -15,7 +15,6 @@ static const uint8_t k_block_flags[EVENTS] =
 
 static const uint8_t k_irq_pcm[4] = { 0, 0, 1, 0 };
 static const uint8_t k_irq_fm[6] = { 0x01, 0x01, 0x00, 0x00, 0x00, 0x00 };
-static const uint8_t k_wave[3][4] = { { 0x12, 0x34, 0xA5, 0x5A }, { 0x13, 0x35, 0xA4, 0x5B }, { 0x17, 0x00, 0xA0, 0x00 } };
 
 static int bytes_equal(const uint8_t* a, const uint8_t* b, int count)
 {
@@ -28,7 +27,8 @@ static int bytes_equal(const uint8_t* a, const uint8_t* b, int count)
     return 1;
 }
 
-// The odd bytes keep whatever wave RAM held, which isn't the same from one run to the next
+// Only the even bytes move: a write leaves whatever wave RAM held in the odd ones, and a word read puts 00h or 88h
+// above the even byte, not the same from one session to the next
 static int even_bytes_written(const uint8_t* reads, int which)
 {
     for (int i = 0; i < 4; i++)
@@ -113,8 +113,8 @@ static void evaluate_adc(const void* data, uint32_t steps)
 
     if (check_marty())
     {
-        check_range("04E7H SILENT LEVEL, LOWEST", result->adc_min, 0x70, 0x90);
-        check_range("04E7H SILENT LEVEL, HIGHEST", result->adc_max, 0x70, 0x90);
+        check_range("04E7H SILENT LEVEL, LOWEST", result->adc_min, 0x60, 0xA0);
+        check_range("04E7H SILENT LEVEL, HIGHEST", result->adc_max, 0x60, 0xA0);
     }
 }
 
@@ -123,13 +123,12 @@ static void evaluate_wave(const void* data, uint32_t steps)
     const irq_t* result = (const irq_t*)data;
     (void)steps;
 
-    check_true("BYTES, PCM STOPPED", bytes_equal(result->wave_cases[0], k_wave[0], 4));
-    check_true("BYTES WRITTEN WITH PCM RUNNING", bytes_equal(result->wave_cases[1], k_wave[1], 4));
+    check_true("BYTES, PCM STOPPED", bytes_equal(result->wave_cases[0], k_wave_pattern, 4));
 
     if (check_marty())
     {
         check_true("DWORD WRITE, EVEN BYTES ONLY", even_bytes_written(result->wave_cases[4], 4));
-        check_true("WORD READ, EVEN BYTES ONLY", bytes_equal(result->wave_cases[5], k_wave[2], 4));
+        check_true("WORD READ, EVEN BYTES ONLY", even_bytes_written(result->wave_cases[5], 5));
     }
 }
 

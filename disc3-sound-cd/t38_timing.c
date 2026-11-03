@@ -369,7 +369,7 @@ static void span_add(span_t* span, uint32_t time)
 
 static uint32_t distance(int index)
 {
-    return index < DISTANCES - 1 ? k_distances[index] : CD_DATA_SECTORS - 1 - SEEK_LBA;
+    return index < DISTANCES - 1 ? k_distances[index] : CD_FAR_LBA - SEEK_LBA;
 }
 
 static uint32_t mean_interval(const speed_t* speed)

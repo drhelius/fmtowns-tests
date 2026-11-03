@@ -193,7 +193,8 @@ static void seek(state_t* result, uint8_t step, uint32_t lba)
     add_event(result, step, KIND_SEEK, 1, &log);
 }
 
-// Eight reads of one sector, eight in order, eight alternating with the last data sector; 80h around each
+// Eight reads of one sector, eight in order, eight alternating with a sector near the data track's end; 80h around
+// each
 static void step_repeat(state_t* result, int polls)
 {
     cd_log_t log;
@@ -203,7 +204,7 @@ static void step_repeat(state_t* result, int polls)
         for (int i = 0; i < READS; i++)
         {
             uint32_t lba = set == 0 ? CD_PAD_LBA : set == 1 ? CD_PAD_LBA + 1 + (uint32_t)i :
-                (i & 1) != 0 ? CD_DATA_SECTORS - 1 : CD_PAD_LBA;
+                (i & 1) != 0 ? CD_FAR_LBA : CD_PAD_LBA;
 
             shell_step("READS %u/%u LBA %u", set * READS + i + 1, 3 * READS, lba);
 
